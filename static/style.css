@@ -897,57 +897,6 @@ th.num {
   }
 }
 
-.mrt-train {
-  animation: mrt-train 9s ease-in-out infinite;
-}
-
-@keyframes mrt-train {
-  0%,
-  100% {
-    transform: translateX(-260px);
-    opacity: 0;
-  }
-  12% {
-    opacity: 1;
-  }
-  35%,
-  60% {
-    transform: translateX(0);
-    opacity: 1;
-  }
-  88% {
-    opacity: 1;
-  }
-  95% {
-    transform: translateX(240px);
-    opacity: 0;
-  }
-}
-
-.mrt-path {
-  animation: mrt-march 1.2s linear infinite;
-}
-
-@keyframes mrt-march {
-  to {
-    stroke-dashoffset: -20;
-  }
-}
-
-.mrt-traveller {
-  animation: mrt-travel 6s ease-in-out infinite;
-}
-
-@keyframes mrt-travel {
-  0% {
-    transform: translateX(0);
-  }
-  80%,
-  100% {
-    transform: translateX(var(--travel));
-  }
-}
-
 .tooltip {
   position: fixed;
   pointer-events: none;

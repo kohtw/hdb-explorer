@@ -23,7 +23,7 @@ import urllib.request
 
 from build_webapp_db import Median
 from geo import PointIndex, distance_m
-from transport_model import CBD_POINT, TransportModel
+from transport_model import CBD_POINT, TransportModel, normalize_station
 
 ROOT = pathlib.Path(__file__).parent
 DB_FILE = ROOT / "data" / "hdb.db"
@@ -288,7 +288,9 @@ def main() -> None:
     )
     if transport.unmatched_exit_stations:
         print("Stations without line codes (ignored for lines/CBD):", transport.unmatched_exit_stations)
-    exits = PointIndex(load_geojson_points("mrt_exits.geojson", lambda p: p["STATION_NA"].strip()))
+    exits = PointIndex(
+        load_geojson_points("mrt_exits.geojson", lambda p: (normalize_station(p["STATION_NA"]), p["EXIT_CODE"].strip()))
+    )
     hawkers = PointIndex(
         load_geojson_points("hawker_centres.geojson", lambda p: p["NAME"].strip(), lambda p: p.get("STATUS") in OPEN_HAWKER_STATUSES)
     )
@@ -308,7 +310,7 @@ def main() -> None:
     rows = []
     for b in blocks:
         lat, lon = b["latitude"], b["longitude"]
-        mrt_d, _ = exits.nearest(lat, lon)
+        mrt_d, (exit_station, exit_code) = exits.nearest(lat, lon)
         hawker_d, hawker_name = hawkers.nearest(lat, lon)
         gp_d, gp_name = gps.nearest(lat, lon)
         poly_d, poly_name = polyclinics.nearest(lat, lon)
@@ -327,6 +329,8 @@ def main() -> None:
                 "latitude": lat,
                 "longitude": lon,
                 "nearest_exit_m": round(mrt_d),
+                "nearest_exit_station": exit_station,
+                "nearest_exit_code": exit_code,
                 **transport.access(lat, lon),
                 "cbd_km": round(distance_m(lat, lon, *CBD_POINT) / 1000, 2),
                 "nearest_hawker_m": round(hawker_d),

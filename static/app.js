@@ -724,74 +724,119 @@ function typeValue(stats) {
   return building.metric === "psf" ? stats.median_psf : stats.median_price;
 }
 
-const STATION_W = 140;
+const STATION_ICON_W = 190; // drawn at this size, then scaled down
+const SCENE_W = 560;
+const SIGN_TEAL = "#0e5c62";
+const SIGN_YELLOW = "#f2c230";
 
-// A little MRT station at the right of the scene, plus the trip from the block's door to it.
-function mrtSceneSvg({ lv, W, groundY, canalY, fromX }) {
-  const lines = (lv.rail_station_lines || "").split(",").filter(Boolean);
-  const mainColor = (LINE_INFO[lines[0]] || ["", "#c8102e"])[1];
-  const name = stationName(lv.rail_station);
-  const x = W - STATION_W - 16;
-  const trackY = groundY - 128;
-  const roofY = groundY - 72;
-  const byBus = lv.rail_how !== "walk";
-  const tripText = byBus
-    ? `${titleCase(lv.rail_how)} · ${fmtMin(lv.rail_min)}`
-    : `${fmtDist(lv.nearest_exit_m)} · ${fmtMin(lv.rail_min)} walk`;
-  const nameSize = Math.min(10, 112 / Math.max(1, name.length * 0.6));
-  const pathY = groundY + 11;
-  const pathFrom = fromX + 8;
-  const pathTo = x + STATION_W / 2;
-  const travel = pathTo - pathFrom - 24;
-  const pillW = tripText.length * 5.6 + 18;
-  const pillX = Math.min(Math.max((pathFrom + pathTo) / 2, pathFrom + pillW / 2 + 4), x - pillW / 2 - 4);
+function nearbyStations(lv) {
+  if (!lv) return [];
+  try {
+    const list = JSON.parse(lv.stations_15min || "[]");
+    if (list.length) return list;
+  } catch {
+    // fall through to the single fastest station
+  }
+  return lv.rail_station
+    ? [{ station: lv.rail_station, min: lv.rail_min, how: lv.rail_how, lines: lv.rail_station_lines, exit: null }]
+    : [];
+}
 
-  const chips = lines
+// A classic MRT entrance (canopy, stairs, handrails, hanging sign), drawn with its ground at y=0.
+function mrtEntranceSvg(st) {
+  const W = STATION_ICON_W;
+  const cx = W / 2;
+  const stairH = 18;
+  const landingY = -stairH;
+  const canopyY = -92;
+  const lines = (st.lines || "").split(",").filter(Boolean);
+  const exitLetter = st.exit ? st.exit.replace(/^exit\s*/i, "") : "";
+
+  const signW = 128;
+  const signX = cx - signW / 2;
+  const signY = canopyY + 19;
+  const badges = lines
     .map((g, i) => {
-      const [label, color] = LINE_INFO[g] || [g, "#6f6466"];
-      const cx = x + STATION_W / 2 - (lines.length * 26) / 2 + i * 26;
-      return `<rect x="${cx}" y="${roofY + 34}" width="22" height="12" rx="3" fill="${color}"/>
-        <text x="${cx + 11}" y="${roofY + 43}" font-size="8" font-weight="800" fill="#fff" text-anchor="middle">${esc(label)}</text>`;
+      const color = (LINE_INFO[g] || ["", "#6f6466"])[1];
+      return `<rect x="${signX + 22 + i * 22}" y="${signY + 4}" width="18" height="9" rx="2" fill="${color}" stroke="#fff" stroke-width="0.8"/>`;
     })
     .join("");
-
-  const trainWindows = Array.from({ length: 6 }, (_, i) => `<rect x="${12 + i * 17}" y="5" width="11" height="8" rx="2" fill="#cfe4f2"/>`).join("");
-  const traveller = byBus
-    ? `<g transform="translate(0,-13)">
-         <rect x="-14" y="0" width="28" height="12" rx="3" fill="#c8102e"/>
-         <rect x="-11" y="2" width="6" height="4" rx="1" fill="#fff"/><rect x="-3" y="2" width="6" height="4" rx="1" fill="#fff"/><rect x="5" y="2" width="6" height="4" rx="1" fill="#fff"/>
-         <circle cx="-8" cy="12" r="2.6" fill="#1f1a1b"/><circle cx="8" cy="12" r="2.6" fill="#1f1a1b"/></g>`
-    : standingOtter(0, 0, 0.5, "");
+  const steps = Array.from({ length: 5 }, (_, i) => {
+    const y = landingY + i * (stairH / 5);
+    const left = 34 - i * 5;
+    const right = W - 34 + i * 5;
+    return `<rect x="${left}" y="${y}" width="${right - left}" height="${stairH / 5}" fill="${i % 2 ? "#ddd6cd" : "#e8e2da"}"/>
+      <rect x="${left}" y="${y}" width="${right - left}" height="0.8" fill="#f6f2ec"/>`;
+  }).join("");
+  const railing = (rx) => {
+    const d = `M${rx - 5} 0 L${rx - 5} -25 Q${rx - 5} -30 ${rx} -30 Q${rx + 5} -30 ${rx + 5} -25 L${rx + 5} 0`;
+    return `<path d="${d}" fill="none" stroke="#8f979e" stroke-width="2.8" stroke-linecap="round"/>
+      <path d="${d}" fill="none" stroke="#e4e8eb" stroke-width="1.2" stroke-linecap="round"/>`;
+  };
+  const gates = Array.from({ length: 4 }, (_, i) => `<rect x="${cx - 34 + i * 19}" y="${landingY - 9}" width="11" height="9" rx="1.5" fill="#a9b2b7"/>
+    <rect x="${cx - 32 + i * 19}" y="${landingY - 8}" width="7" height="2" rx="1" fill="#6cc08a"/>`).join("");
 
   return `
-  <g class="mrt-scene">
-    <title>${esc(name)} · ${esc(tripText)}</title>
-    <rect x="${x - 60}" y="${trackY}" width="${W - x + 60}" height="7" rx="2" fill="#b9aeb0"/>
-    <rect x="${x - 40}" y="${trackY + 7}" width="8" height="${roofY - trackY - 7}" fill="#d9cfd0"/>
-    <rect x="${x + STATION_W + 8}" y="${trackY + 7}" width="8" height="${roofY - trackY - 7}" fill="#d9cfd0"/>
-    <g transform="translate(${x - 20},${trackY - 22})"><g class="mrt-train">
-      <rect x="0" y="0" width="118" height="21" rx="8" fill="#fff" stroke="#d9cfd0"/>
-      ${trainWindows}
-      <rect x="0" y="15" width="118" height="4" fill="${mainColor}"/>
-      <rect x="2" y="3" width="6" height="11" rx="2" fill="#cfe4f2"/>
-    </g></g>
+    <ellipse cx="${cx}" cy="1" rx="${W / 2 + 6}" ry="5" fill="rgba(0,0,0,0.08)"/>
+    <rect x="8" y="${canopyY + 12}" width="${W - 16}" height="${landingY - canopyY - 12}" fill="#efe8df"/>
+    <rect x="${cx - 44}" y="${canopyY + 40}" width="88" height="${landingY - canopyY - 40}" fill="#34424a"/>
+    <path d="M${cx - 30} ${canopyY + 40} L${cx - 44} ${canopyY + 56} M${cx + 20} ${canopyY + 40} L${cx} ${canopyY + 64}" stroke="#fff" stroke-width="2" opacity=".12"/>
+    <rect x="${cx - 26}" y="${canopyY + 44}" width="52" height="5" rx="1" fill="#141414"/>
+    <rect x="${cx - 22}" y="${canopyY + 45.8}" width="44" height="1.4" fill="#46d16b"/>
+    ${gates}
+    <rect x="18" y="${canopyY + 30}" width="18" height="28" fill="#ff5a3c"/>
+    <rect x="${W - 36}" y="${canopyY + 30}" width="18" height="28" fill="#ff5a3c"/>
+    <rect x="8" y="${landingY}" width="${W - 16}" height="${stairH}" fill="#e1d9cf"/>
+    ${steps}
+    ${railing(40)}${railing(cx)}${railing(W - 40)}
+    <rect x="0" y="${canopyY + 12}" width="9" height="${-canopyY - 12}" fill="#f6f1ea" stroke="#e2dbd2" stroke-width="0.6"/>
+    <rect x="${W - 9}" y="${canopyY + 12}" width="9" height="${-canopyY - 12}" fill="#f6f1ea" stroke="#e2dbd2" stroke-width="0.6"/>
+    <rect x="-8" y="${canopyY}" width="${W + 16}" height="12" rx="2" fill="#faf8f4" stroke="#e2dbd2" stroke-width="0.8"/>
+    <rect x="2" y="${canopyY + 12}" width="${W - 4}" height="3" fill="#ddd5cb"/>
+    <rect x="${signX + 18}" y="${canopyY + 15}" width="1.4" height="4" fill="#8f979e"/>
+    <rect x="${signX + signW - 19}" y="${canopyY + 15}" width="1.4" height="4" fill="#8f979e"/>
+    <rect x="${signX}" y="${signY}" width="${signW}" height="17" rx="2" fill="${SIGN_TEAL}" stroke="#083f43" stroke-width="0.8"/>
+    <rect x="${signX + 5}" y="${signY + 3}" width="11" height="11" rx="2" fill="${SIGN_YELLOW}"/>
+    <path d="M${signX + 7.5} ${signY + 7} h6 M${signX + 7.5} ${signY + 10} h6" stroke="${SIGN_TEAL}" stroke-width="1.4"/>
+    ${badges}
+    <rect x="${signX + 24 + lines.length * 22}" y="${signY + 7.5}" width="${Math.max(10, signW - 46 - lines.length * 22)}" height="2" rx="1" fill="#fff" opacity=".85"/>
+    ${
+      exitLetter
+        ? `<circle cx="${signX + signW - 10}" cy="${signY + 8.5}" r="6.5" fill="${SIGN_YELLOW}"/>
+           <text x="${signX + signW - 10}" y="${signY + 11.8}" font-size="${exitLetter.length > 1 ? 6.5 : 9}" font-weight="800" fill="#1f1a1b" text-anchor="middle">${esc(exitLetter)}</text>`
+        : ""
+    }`;
+}
 
-    <path d="M${x - 4} ${roofY + 4} Q${x + STATION_W / 2} ${roofY - 22} ${x + STATION_W + 4} ${roofY + 4} Z" fill="${mainColor}"/>
-    <rect x="${x}" y="${roofY + 2}" width="${STATION_W}" height="${groundY - roofY - 2}" rx="4" fill="#fff" stroke="#e3d6d8"/>
-    <rect x="${x + 10}" y="${roofY + 10}" width="${STATION_W - 20}" height="18" rx="4" fill="#1f1a1b"/>
-    <text x="${x + STATION_W / 2}" y="${roofY + 22.5}" font-size="${nameSize.toFixed(1)}" font-weight="800" fill="#fff" text-anchor="middle">${esc(name)}</text>
-    ${chips}
-    <rect x="${x + STATION_W / 2 - 24}" y="${groundY - 22}" width="22" height="22" rx="2" fill="#cfe4f2" stroke="#b3cfe0"/>
-    <rect x="${x + STATION_W / 2 + 2}" y="${groundY - 22}" width="22" height="22" rx="2" fill="#cfe4f2" stroke="#b3cfe0"/>
-
-    <path class="mrt-path" d="M${pathFrom} ${pathY} L${pathTo} ${pathY}" stroke="#8b0a1f" stroke-width="2" stroke-dasharray="5 5" fill="none"/>
-    <circle cx="${pathTo}" cy="${pathY}" r="3.5" fill="#8b0a1f"/>
-    <g transform="translate(${pathFrom + 12},${pathY})"><g class="mrt-traveller" style="--travel:${Math.max(0, travel).toFixed(0)}px">${traveller}</g></g>
-    <g transform="translate(${pillX},${groundY - 16})">
-      <rect x="${-pillW / 2}" y="-11" width="${pillW}" height="20" rx="10" fill="#fff" stroke="#f0dfe1"/>
-      <text x="0" y="3" font-size="10" font-weight="800" fill="#8b0a1f" text-anchor="middle">${esc(tripText)}</text>
-    </g>
-  </g>`;
+// Strip under the building scene: one small entrance per station within 15 min, each with a caption.
+function mrtStripSvg(stations) {
+  const slot = Math.min(140, (SCENE_W - 20) / stations.length);
+  const scale = Math.min(0.6, (slot - 18) / STATION_ICON_W);
+  const iconW = STATION_ICON_W * scale;
+  const groundY = 26 + 92 * scale + 4;
+  const H = groundY + 38;
+  const startX = (SCENE_W - stations.length * slot) / 2;
+  const items = stations
+    .map((st, i) => {
+      const cx = startX + i * slot + slot / 2;
+      const name = stationName(st.station);
+      const how = st.how === "walk" ? `walk${st.exit ? ` · ${st.exit}` : ""}` : st.how.replace("bus", "by bus");
+      const detail = `${fmtMin(st.min)} ${how}`;
+      const nameSize = Math.min(12, (slot - 6) / Math.max(1, name.length * 0.58));
+      return `<g>
+        <title>${esc(name)} · ${esc(detail)}${st.walk_m ? ` · ${st.walk_m} m` : ""}</title>
+        <g transform="translate(${cx - iconW / 2},${groundY}) scale(${scale.toFixed(3)})">${mrtEntranceSvg(st)}</g>
+        <text x="${cx}" y="${groundY + 17}" font-size="${nameSize.toFixed(1)}" font-weight="800" fill="${i === 0 ? "#8b0a1f" : "#1f1a1b"}" text-anchor="middle">${esc(name)}</text>
+        <text x="${cx}" y="${groundY + 31}" font-size="10" font-weight="600" fill="#6f6466" text-anchor="middle">${esc(detail)}</text>
+      </g>`;
+    })
+    .join("");
+  return `<svg class="mrt-strip" viewBox="0 0 ${SCENE_W} ${H.toFixed(0)}" role="img" aria-label="MRT and LRT stations within 15 minutes">
+    <rect x="0" y="${groundY}" width="${SCENE_W}" height="${H - groundY}" fill="#e7f4ea"/>
+    <rect x="0" y="${groundY}" width="${SCENE_W}" height="3" fill="#cfe9d6"/>
+    <text x="14" y="18" font-size="11" font-weight="800" fill="#8b0a1f" letter-spacing="0.5">MRT / LRT WITHIN 15 MIN</text>
+    ${items}
+  </svg>`;
 }
 
 // Spread the block's unit mix across one floor's worth of columns (largest-remainder rounding).
@@ -851,11 +896,11 @@ function drawBuildingSvg() {
   const { values, min: vMin, max: vMax, norm } = colorDomain(bands, split, groups);
   const typeStats = (band, type) => band.types.find((t) => t.flat_type === type);
 
-  const station = d.livability?.rail_station ? d.livability : null;
-  const W = station ? 760 : 560;
+  const stations = nearbyStations(d.livability);
   const floorH = Math.max(8, Math.min(26, Math.floor(470 / floors)));
   const bw = split ? Math.max(210, Math.min(260, groups.reduce((s, g) => s + g.cols, 0) * 22)) : 210;
   const bx = split ? 140 - (bw - 210) / 2 : 150;
+  const W = SCENE_W;
   const roofSpace = 78;
   const voidH = 24;
   const groundH = split ? 56 : 46;
@@ -1058,12 +1103,11 @@ function drawBuildingSvg() {
 
     ${tree(bx - 48, 1)}${tree(bx - 92, 0.75)}${tree(bx + bw + 40, 0.9)}${tree(bx + bw + 84, 0.7)}
     ${otters}
-    ${station ? mrtSceneSvg({ lv: station, W, groundY, canalY, fromX: bx + bw }) : ""}
     ${columnLabels}
     ${floorNums}
     ${labels}
     ${bands.length ? "" : `<text x="${bx + bw / 2}" y="${floorTop(Math.ceil(floors / 2))}" text-anchor="middle" font-size="13" font-weight="700" fill="#8b0a1f">No resales in this period</text>`}
-  </svg>`;
+  </svg>${stations.length ? mrtStripSvg(stations) : ""}`;
   building.noAnim = false;
 
   const fmt = building.metric === "psf" ? (v) => `${fmtPsf(v)} psf` : fmtMoney;

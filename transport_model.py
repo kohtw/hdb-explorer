@@ -41,6 +41,7 @@ CBD_EGRESS_MIN = 2
 CBD_STATION = "RAFFLES PLACE"
 CBD_POINT = (1.2840, 103.8514)
 LINES_WINDOW_MIN = 15
+MAX_LISTED_STATIONS = 4
 SPEED = {"mrt": (45, 0.4), "lrt": (28, 0.3)}  # km/h, dwell minutes per station
 
 LINE_GROUPS = {
@@ -108,8 +109,10 @@ class TransportModel:
         exits = defaultdict(list)
         for f in json.loads(exits_geojson.read_text(encoding="utf-8"))["features"]:
             lon, lat = f["geometry"]["coordinates"][:2]
-            exits[normalize_station(f["properties"]["STATION_NA"])].append((float(lat), float(lon)))
-        self.exit_index = PointIndex([(lat, lon, name) for name, pts in exits.items() for lat, lon in pts])
+            props = f["properties"]
+            exits[normalize_station(props["STATION_NA"])].append((float(lat), float(lon), props.get("EXIT_CODE", "").strip()))
+        # Payload is (station, exit code).
+        self.exit_index = PointIndex([(lat, lon, (name, code)) for name, pts in exits.items() for lat, lon, code in pts])
         self.station_coord = {
             name: (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)) for name, pts in exits.items()
         }
@@ -207,7 +210,7 @@ class TransportModel:
         stop_exits = {}
         for code, (lat, lon, _) in self.stops.items():
             near = {}
-            for d, station in self.exit_index.within(lat, lon, STOP_TO_EXIT_M):
+            for d, (station, _) in self.exit_index.within(lat, lon, STOP_TO_EXIT_M):
                 near[station] = min(walk_min(d), near.get(station, 99))
             if near:
                 stop_exits[code] = near
@@ -233,14 +236,14 @@ class TransportModel:
     # ----- per-location access -----
 
     def access(self, lat: float, lon: float) -> dict:
-        best = {}  # station -> (minutes, how)
+        best = {}  # station -> (minutes, how, exit code, walk metres) — exit/metres only when walking
 
-        def offer(station: str, minutes: float, how: str) -> None:
+        def offer(station: str, minutes: float, how: str, exit_code: str | None = None, meters: float | None = None) -> None:
             if station not in best or minutes < best[station][0]:
-                best[station] = (minutes, how)
+                best[station] = (minutes, how, exit_code, meters)
 
-        for d, station in self.exit_index.within(lat, lon, MAX_DIRECT_WALK_M):
-            offer(station, walk_min(d), "walk")
+        for d, (station, exit_code) in self.exit_index.within(lat, lon, MAX_DIRECT_WALK_M):
+            offer(station, walk_min(d), "walk", exit_code, d)
 
         board_stops = self.stop_index.within(lat, lon, MAX_BOARD_WALK_M)
         for d, code in board_stops:
@@ -249,20 +252,37 @@ class TransportModel:
                 offer(station, to_stop + ride, f"bus {service}")
 
         if not best:
-            station_d, station = self.exit_index.nearest(lat, lon)
-            offer(station, walk_min(station_d), "walk")
+            station_d, (station, exit_code) = self.exit_index.nearest(lat, lon)
+            offer(station, walk_min(station_d), "walk", exit_code, station_d)
 
-        rail_station, (rail_min, rail_how) = min(best.items(), key=lambda kv: kv[1][0])
-        reachable = {s for s, (m, _) in best.items() if m <= LINES_WINDOW_MIN}
+        ranked = sorted(best.items(), key=lambda kv: kv[1][0])
+        rail_station, (rail_min, rail_how, _, _) = ranked[0]
+        reachable = {s for s, (m, *_) in best.items() if m <= LINES_WINDOW_MIN}
         lines = set().union(*(self.station_lines[s] for s in reachable)) if reachable else set()
+        # Stations within the window for display; always at least the fastest one.
+        nearby_stations = [
+            {
+                "station": s,
+                "min": round(m, 1),
+                "how": how,
+                "lines": ",".join(sorted(self.station_lines[s])),
+                "exit": exit_code if how == "walk" else None,
+                "walk_m": round(meters) if how == "walk" and meters is not None else None,
+            }
+            for s, (m, how, exit_code, meters) in ranked
+            if m <= LINES_WINDOW_MIN
+        ][:MAX_LISTED_STATIONS] or [
+            {"station": rail_station, "min": round(rail_min, 1), "how": rail_how,
+             "lines": ",".join(sorted(self.station_lines[rail_station])), "exit": None, "walk_m": None}
+        ]
 
         interchange_options = [
-            (self._via_rail(m, self.rail_to_interchange[s]), s) for s, (m, _) in best.items() if s in self.rail_to_interchange
+            (self._via_rail(m, self.rail_to_interchange[s]), s) for s, (m, *_) in best.items() if s in self.rail_to_interchange
         ]
         interchange_min, interchange_via = min(interchange_options) if interchange_options else (None, None)
 
         cbd_options = [
-            (self._via_rail(m, self.rail_to_cbd[s]) + CBD_EGRESS_MIN, s) for s, (m, _) in best.items() if s in self.rail_to_cbd
+            (self._via_rail(m, self.rail_to_cbd[s]) + CBD_EGRESS_MIN, s) for s, (m, *_) in best.items() if s in self.rail_to_cbd
         ]
         cbd_options.append((walk_min(distance_m(lat, lon, *CBD_POINT)), "walk"))
         cbd_min, cbd_via = min(cbd_options)
@@ -284,4 +304,5 @@ class TransportModel:
             "bus_services_400m": len(nearby_services),
             "cbd_min": round(cbd_min, 1),
             "cbd_via": cbd_via,
+            "stations_15min": json.dumps(nearby_stations),
         }
