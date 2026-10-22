@@ -154,6 +154,50 @@ main {
   }
 }
 
+.subtabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 22px;
+  padding: 5px;
+  background: var(--red-softer);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.subtab {
+  border: 0;
+  background: transparent;
+  padding: 9px 20px;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 0.92rem;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.subtab:hover {
+  color: var(--red);
+}
+
+.subtab.active {
+  background: var(--red);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(200, 16, 46, 0.25);
+}
+
+.subview {
+  display: none;
+  animation: fadein 0.25s ease;
+}
+
+.subview.active {
+  display: block;
+}
+
 h2 {
   margin: 0 0 4px;
   font-size: 1.5rem;

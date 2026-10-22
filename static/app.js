@@ -136,8 +136,17 @@ const metricFmt = (metric) => (metric === "count" ? fmtNum : metric.includes("ps
 
 // ================= routing =================
 
-const state = { meta: null, loaded: {} };
-const TABS = ["overview", "building", "explore", "towns", "insights", "map"];
+const state = { meta: null, loaded: {}, analyseSub: "explore" };
+const TABS = ["overview", "building", "analyse", "map"];
+const ANALYSE_SUBS = ["explore", "towns", "insights"];
+const LOADERS = {
+  overview: loadOverview,
+  building: () => {},
+  map: loadMap,
+  explore: initExplore,
+  towns: loadTowns,
+  insights: loadInsights,
+};
 
 function go(hash) {
   if (location.hash === hash) route();
@@ -149,8 +158,21 @@ function showTab(name) {
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
 }
 
+function showSubTab(sub) {
+  $$(".subtab").forEach((t) => t.classList.toggle("active", t.dataset.sub === sub));
+  $$(".subview").forEach((v) => v.classList.toggle("active", v.id === `view-${sub}`));
+}
+
+function loadOnce(name) {
+  if (state.loaded[name]) return;
+  state.loaded[name] = true;
+  LOADERS[name]();
+}
+
 function route() {
-  const [tab, kind, ...rest] = location.hash.replace(/^#/, "").split("/");
+  let [tab, kind, ...rest] = location.hash.replace(/^#/, "").split("/");
+  // Explore/Towns/Insights used to be top-level tabs; keep their old links working.
+  if (ANALYSE_SUBS.includes(tab)) [tab, kind] = ["analyse", tab];
   const name = TABS.includes(tab) ? tab : "overview";
   showTab(name);
 
@@ -158,9 +180,12 @@ function route() {
     const value = decodeURIComponent(rest.join("/"));
     loadBuilding(kind === "postal" ? { postal: value } : { unit_id: value });
   }
-  if (!state.loaded[name]) {
-    state.loaded[name] = true;
-    ({ overview: loadOverview, explore: initExplore, towns: loadTowns, insights: loadInsights, map: loadMap, building: () => {} })[name]();
+  if (name === "analyse") {
+    if (ANALYSE_SUBS.includes(kind)) state.analyseSub = kind;
+    showSubTab(state.analyseSub);
+    loadOnce(state.analyseSub);
+  } else {
+    loadOnce(name);
   }
   if (name === "map" && mapState.map) setTimeout(() => mapState.map.invalidateSize(), 50);
 }
@@ -1534,6 +1559,7 @@ async function loadMap() {
 
 async function boot() {
   $$(".tab").forEach((t) => t.addEventListener("click", () => go(`#${t.dataset.tab}`)));
+  $$(".subtab").forEach((t) => t.addEventListener("click", () => go(`#analyse/${t.dataset.sub}`)));
   $(".brand").addEventListener("click", () => go("#overview"));
   initBuildingSearch();
   state.meta = await api("/api/meta");

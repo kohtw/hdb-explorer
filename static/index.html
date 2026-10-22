@@ -27,9 +27,7 @@
     <nav class="tabs">
       <button class="tab" data-tab="overview">Overview</button>
       <button class="tab" data-tab="building">Building</button>
-      <button class="tab" data-tab="explore">Explore</button>
-      <button class="tab" data-tab="towns">Towns</button>
-      <button class="tab" data-tab="insights">Insights</button>
+      <button class="tab" data-tab="analyse">Analyse</button>
       <button class="tab" data-tab="map">Map</button>
     </nav>
   </header>
@@ -101,8 +99,16 @@
       </div>
     </section>
 
-    <!-- ================= EXPLORE ================= -->
-    <section class="view" id="view-explore">
+    <!-- ================= ANALYSE ================= -->
+    <section class="view" id="view-analyse">
+    <nav class="subtabs">
+      <button class="subtab" data-sub="explore">Transactions</button>
+      <button class="subtab" data-sub="towns">Towns</button>
+      <button class="subtab" data-sub="insights">Insights</button>
+    </nav>
+
+    <!-- ===== Transactions ===== -->
+    <div class="subview" id="view-explore">
       <h2>Explore transactions</h2>
       <p class="subtitle">Filter, sort and export every resale transaction since 1990.</p>
       <div class="card" style="margin-bottom: 16px">
@@ -166,10 +172,10 @@
           </div>
         </div>
       </div>
-    </section>
+    </div>
 
-    <!-- ================= TOWNS ================= -->
-    <section class="view" id="view-towns">
+    <!-- ===== Towns ===== -->
+    <div class="subview" id="view-towns">
       <h2>Towns</h2>
       <p class="subtitle" id="towns-subtitle">Last 12 months of resales, plus every HDB block on record.</p>
       <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap">
@@ -192,10 +198,10 @@
       <div class="card flush">
         <div class="table-wrap"><table id="towns-table"></table></div>
       </div>
-    </section>
+    </div>
 
-    <!-- ================= INSIGHTS ================= -->
-    <section class="view" id="view-insights">
+    <!-- ===== Insights ===== -->
+    <div class="subview" id="view-insights">
       <h2>Insights</h2>
       <p class="subtitle" id="insights-subtitle">Patterns from the last 3 years of resales.</p>
       <div class="chips" id="insights-types" style="margin-bottom: 16px"></div>
@@ -231,6 +237,7 @@
           <div class="table-wrap"><table id="table-value"></table></div>
         </div>
       </div>
+    </div>
     </section>
 
     <!-- ================= MAP ================= -->
