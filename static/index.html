@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HDB Explorer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/static/vendor/leaflet.min.css" />
+<link rel="stylesheet" href="/static/style.css" />
+<script src="/static/vendor/chart.umd.min.js"></script>
+<script src="/static/vendor/leaflet.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand" data-go="overview">
+        <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true">
+          <rect x="6" y="5" width="18" height="22" rx="2" fill="#fff" />
+          <rect x="5" y="3" width="20" height="4" rx="1.5" fill="#ffd6db" />
+          <g fill="#c8102e">
+            <rect x="9" y="10" width="3" height="3" rx=".5" /><rect x="13.5" y="10" width="3" height="3" rx=".5" /><rect x="18" y="10" width="3" height="3" rx=".5" />
+            <rect x="9" y="15" width="3" height="3" rx=".5" /><rect x="13.5" y="15" width="3" height="3" rx=".5" /><rect x="18" y="15" width="3" height="3" rx=".5" />
+            <rect x="13" y="21" width="4" height="6" rx="1" />
+          </g>
+        </svg>
+        <div>HDB Explorer<small>Singapore resale flats, 1990 – today</small></div>
+      </div>
+      <form class="header-search" id="header-search">
+        <input id="header-search-input" placeholder="Postal code, e.g. 560174" inputmode="numeric" autocomplete="off" />
+        <button type="submit">Find block</button>
+      </form>
+    </div>
+    <nav class="tabs">
+      <button class="tab" data-tab="overview">Overview</button>
+      <button class="tab" data-tab="building">Building</button>
+      <button class="tab" data-tab="explore">Explore</button>
+      <button class="tab" data-tab="towns">Towns</button>
+      <button class="tab" data-tab="insights">Insights</button>
+      <button class="tab" data-tab="map">Map</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ================= OVERVIEW ================= -->
+    <section class="view" id="view-overview">
+      <h2>Market overview</h2>
+      <p class="subtitle" id="overview-subtitle">Loading…</p>
+      <div class="kpis" id="overview-kpis"></div>
+      <div class="grid cols-2">
+        <div class="card">
+          <div class="card-head">
+            <h3>Monthly median price (last 5 years)</h3>
+            <div class="segmented" id="overview-monthly-metric">
+              <button data-value="median_price" class="active">Price</button>
+              <button data-value="median_psf">$ psf</button>
+              <button data-value="count">Volume</button>
+            </div>
+          </div>
+          <div class="chart"><canvas id="chart-monthly"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Median price by flat type</h3></div>
+          <div class="chart"><canvas id="chart-by-type"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Resale volume & million-dollar flats</h3></div>
+          <div class="chart"><canvas id="chart-volume"></canvas></div>
+        </div>
+        <div class="card flush">
+          <div class="card-head" style="padding: 18px 18px 0"><h3>Top 10 priciest sales, last 12 months</h3></div>
+          <div class="table-wrap"><table id="table-top-recent"></table></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= BUILDING ================= -->
+    <section class="view" id="view-building">
+      <h2>Building explorer</h2>
+      <p class="subtitle">Search a postal code or address to see what each floor band sells for.</p>
+      <div class="building-search">
+        <form class="search-box" id="building-search" autocomplete="off">
+          <input id="building-search-input" placeholder="Postal code (560174) or address (174 Ang Mo Kio Ave 4)" />
+          <div class="suggestions" id="building-suggestions"></div>
+        </form>
+        <button class="btn" form="building-search" type="submit">Show building</button>
+      </div>
+      <div id="building-error"></div>
+      <div id="building-content">
+        <div class="card empty" id="building-empty">
+          <svg width="120" height="120" viewBox="0 0 120 120" aria-hidden="true">
+            <rect x="30" y="20" width="60" height="90" rx="4" fill="#fde8ea" />
+            <rect x="26" y="14" width="68" height="10" rx="3" fill="#c8102e" />
+            <g fill="#fff">
+              <rect x="38" y="32" width="10" height="10" rx="2" /><rect x="55" y="32" width="10" height="10" rx="2" /><rect x="72" y="32" width="10" height="10" rx="2" />
+              <rect x="38" y="50" width="10" height="10" rx="2" /><rect x="55" y="50" width="10" height="10" rx="2" /><rect x="72" y="50" width="10" height="10" rx="2" />
+              <rect x="38" y="68" width="10" height="10" rx="2" /><rect x="55" y="68" width="10" height="10" rx="2" /><rect x="72" y="68" width="10" height="10" rx="2" />
+            </g>
+            <rect x="52" y="88" width="16" height="22" rx="3" fill="#c8102e" />
+          </svg>
+          <h3>Pick a block to build</h3>
+          <p>Try one of these:</p>
+          <div class="chips" style="justify-content: center" id="building-examples"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= EXPLORE ================= -->
+    <section class="view" id="view-explore">
+      <h2>Explore transactions</h2>
+      <p class="subtitle">Filter, sort and export every resale transaction since 1990.</p>
+      <div class="card" style="margin-bottom: 16px">
+        <form class="filters" id="explore-filters">
+          <label class="field">Search<input name="q" placeholder="Street or block" /></label>
+          <label class="field">Town<select name="town"><option value="">All towns</option></select></label>
+          <label class="field">Flat type<select name="flat_type"><option value="">All types</option></select></label>
+          <label class="field">Flat model<select name="flat_model"><option value="">All models</option></select></label>
+          <label class="field">From<input type="month" name="month_from" /></label>
+          <label class="field">To<input type="month" name="month_to" /></label>
+          <label class="field">Min price<input type="number" name="price_min" step="10000" placeholder="$" /></label>
+          <label class="field">Max price<input type="number" name="price_max" step="10000" placeholder="$" /></label>
+          <label class="field">Min sqm<input type="number" name="area_min" /></label>
+          <label class="field">Max sqm<input type="number" name="area_max" /></label>
+          <label class="field">Min storey<input type="number" name="storey_min" /></label>
+          <label class="field">Min lease left (yrs)<input type="number" name="lease_min_years" /></label>
+          <div style="display: flex; gap: 8px">
+            <button class="btn" type="submit">Apply</button>
+            <button class="btn ghost" type="button" id="explore-reset">Reset</button>
+          </div>
+        </form>
+      </div>
+      <div class="kpis" id="explore-kpis"></div>
+      <div class="grid cols-2" style="margin-bottom: 16px">
+        <div class="card">
+          <div class="card-head">
+            <h3>Median by year</h3>
+            <div class="segmented" id="explore-year-metric">
+              <button data-value="median_price" class="active">Price</button>
+              <button data-value="median_psf">$ psf</button>
+              <button data-value="count">Volume</button>
+            </div>
+          </div>
+          <div class="chart"><canvas id="chart-explore-year"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Price distribution</h3></div>
+          <div class="chart"><canvas id="chart-explore-hist"></canvas></div>
+        </div>
+      </div>
+      <div class="card flush">
+        <div class="pager">
+          <div><b id="explore-count">–</b> <span class="muted">transactions</span></div>
+          <div class="controls">
+            <select class="inline" id="explore-page-size">
+              <option value="25">25 / page</option>
+              <option value="50" selected>50 / page</option>
+              <option value="100">100 / page</option>
+              <option value="250">250 / page</option>
+            </select>
+            <a class="btn ghost" id="explore-export" href="#">Export CSV</a>
+          </div>
+        </div>
+        <div class="table-wrap"><table id="explore-table"></table></div>
+        <div class="pager">
+          <span class="muted small">Click a row to open its building</span>
+          <div class="controls">
+            <button class="btn ghost" id="explore-prev">← Prev</button>
+            <span id="explore-page" class="small"></span>
+            <button class="btn ghost" id="explore-next">Next →</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= TOWNS ================= -->
+    <section class="view" id="view-towns">
+      <h2>Towns</h2>
+      <p class="subtitle" id="towns-subtitle">Last 12 months of resales, plus every HDB block on record.</p>
+      <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap">
+        <label class="field" style="flex-direction: row; align-items: center; gap: 8px">Flat type
+          <select id="towns-flat-type" class="inline"><option value="">All types</option></select>
+        </label>
+      </div>
+      <div class="card" style="margin-bottom: 16px">
+        <div class="card-head">
+          <h3>Compare towns over time</h3>
+          <div class="segmented" id="compare-metric">
+            <button data-value="price" class="active">Median price</button>
+            <button data-value="psf">Median $ psf</button>
+          </div>
+        </div>
+        <div class="chips" id="compare-chips" style="margin-bottom: 12px"></div>
+        <div class="chart tall"><canvas id="chart-compare"></canvas></div>
+        <p class="muted small">Click a town in the table below to add or remove it (up to 8).</p>
+      </div>
+      <div class="card flush">
+        <div class="table-wrap"><table id="towns-table"></table></div>
+      </div>
+    </section>
+
+    <!-- ================= INSIGHTS ================= -->
+    <section class="view" id="view-insights">
+      <h2>Insights</h2>
+      <p class="subtitle" id="insights-subtitle">Patterns from the last 3 years of resales.</p>
+      <div class="chips" id="insights-types" style="margin-bottom: 16px"></div>
+      <div class="grid cols-2">
+        <div class="card">
+          <div class="card-head"><h3>Lease decay: $ psf by remaining lease</h3></div>
+          <div class="chart"><canvas id="chart-lease"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Height premium: $ psf by storey</h3></div>
+          <div class="chart"><canvas id="chart-storey"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Flat model: median $ psf</h3></div>
+          <div class="chart"><canvas id="chart-model"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Flat age at sale vs price</h3></div>
+          <div class="chart"><canvas id="chart-age"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Seasonality: average sales per calendar month</h3></div>
+          <div class="chart"><canvas id="chart-season"></canvas></div>
+        </div>
+        <div class="card flush">
+          <div class="card-head" style="padding: 18px 18px 0"><h3>Priciest blocks by $ psf</h3></div>
+          <div class="table-wrap"><table id="table-priciest"></table></div>
+        </div>
+        <div class="card flush">
+          <div class="card-head" style="padding: 18px 18px 0">
+            <h3>Best value blocks <span class="muted small">(lowest $ psf, ≥70 yrs lease left)</span></h3>
+          </div>
+          <div class="table-wrap"><table id="table-value"></table></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= MAP ================= -->
+    <section class="view" id="view-map">
+      <h2>Map</h2>
+      <p class="subtitle" id="map-subtitle">Loading…</p>
+      <div id="map"></div>
+    </section>
+  </main>
+
+  <div class="tooltip" id="tooltip"></div>
+  <footer>Data: HDB via data.gov.sg (Open Data Licence) · Geocoding: OneMap</footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

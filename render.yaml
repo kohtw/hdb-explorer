@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: hdb-explorer
+    runtime: python
+    plan: free
+    buildCommand: bash build.sh
+    startCommand: gunicorn app:app --workers 1 --threads 4 --timeout 180 --bind 0.0.0.0:$PORT
+    healthCheckPath: /api/meta
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: WARM_CACHE
+        value: "1"
