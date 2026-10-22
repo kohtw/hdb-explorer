@@ -11,6 +11,7 @@ python combine_hdb_resale_data.py
 python clean_hdb_data.py
 python download_hdb_property_info.py
 python build_webapp_db.py
+python build_lease_curve.py
 python download_amenities.py
 python build_livability.py
 python precompute.py

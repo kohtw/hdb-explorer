@@ -668,25 +668,48 @@ def api_map():
 
     def compute():
         since = shift_month(latest_month(db), -35)
+        has_curve = table_exists(db, "lease_curve")
+        adjusted = "median(t.price_psf * c.factor)" if has_curve else "NULL"
+        curve_join = "LEFT JOIN lease_curve c ON c.lease_years = t.remaining_lease_months / 12" if has_curve else ""
         rows = db.execute(
-            """
-            SELECT g.unit_id, g.postal_code, g.latitude, g.longitude,
+            f"""
+            SELECT g.unit_id, g.postal_code, ROUND(g.latitude, 5), ROUND(g.longitude, 5),
                    p.town, p.max_floor_lvl, p.year_completed,
-                   s.median_psf, s.median_price, s.count
+                   ROUND(s.median_psf), ROUND(s.adjusted_psf), ROUND(s.lease_years), s.median_price, s.count
             FROM geocode g
             LEFT JOIN property_info p ON p.unit_id = g.unit_id
             LEFT JOIN (
-                SELECT unit_id, median(price_psf) AS median_psf,
-                       median(resale_price) AS median_price, COUNT(*) AS count
-                FROM transactions WHERE month >= ? GROUP BY unit_id
+                SELECT t.unit_id, median(t.price_psf) AS median_psf, {adjusted} AS adjusted_psf,
+                       median(t.remaining_lease_months) / 12.0 AS lease_years,
+                       median(t.resale_price) AS median_price, COUNT(*) AS count
+                FROM transactions t {curve_join}
+                WHERE t.month >= ? GROUP BY t.unit_id
             ) s ON s.unit_id = g.unit_id
             WHERE g.geocode_status = 'ok' AND g.latitude IS NOT NULL
             """,
             (since,),
         )
-        return {"since": since, "points": rows_to_dicts(rows)}
+        curve = (
+            rows_to_dicts(db.execute("SELECT lease_years, factor, n FROM lease_curve WHERE n > 0 ORDER BY lease_years"))
+            if has_curve
+            else []
+        )
+        return {
+            "since": since,
+            "reference_years": 95,
+            "lease_curve": curve,
+            "columns": [
+                "unit_id", "postal_code", "latitude", "longitude", "town", "max_floor_lvl", "year_completed",
+                "median_psf", "adjusted_psf", "lease_years", "median_price", "count",
+            ],
+            "points": [list(r) for r in rows],
+        }
 
     return jsonify(cached("map", compute))
+
+
+def table_exists(db, name: str) -> bool:
+    return db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone() is not None
 
 
 # ---------- building ----------

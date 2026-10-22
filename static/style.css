@@ -39,7 +39,8 @@ select {
 .topbar {
   position: sticky;
   top: 0;
-  z-index: 1000;
+  /* Above Leaflet's map controls (z-index up to 1000) so they don't overlap the header when scrolling. */
+  z-index: 1500;
   background: var(--red);
   color: #fff;
   box-shadow: 0 2px 12px rgba(139, 10, 31, 0.25);
@@ -1321,6 +1322,14 @@ table.weights th {
   50% {
     transform: translateY(1.5px) rotate(2deg);
   }
+}
+
+.map-toggle {
+  box-shadow: var(--shadow);
+}
+
+.map-toggle button {
+  padding: 8px 12px;
 }
 
 .otter-marker img {

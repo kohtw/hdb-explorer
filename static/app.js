@@ -1927,8 +1927,90 @@ function renderBlockLivability(d) {
 
 // ================= map =================
 
-const mapState = { map: null, layer: null };
+const mapState = { map: null, markers: [], points: [], metric: "median_psf", legend: null, data: null };
 const MAP_BINS = ["#ffd0d6", "#f8a1ac", "#f26b7a", "#c8102e", "#6e0618"];
+const MAP_NO_DATA = "#bdb3b5";
+const MAP_METRICS = {
+  median_psf: "Median $ psf",
+  adjusted_psf: "Lease-adjusted $ psf",
+};
+
+function mapBins(metric) {
+  const values = mapState.points.map((p) => p[metric]).filter((v) => v != null).sort((a, b) => a - b);
+  const q = (p) => values[Math.floor(p * (values.length - 1))];
+  const cuts = values.length ? [q(0.2), q(0.4), q(0.6), q(0.8)] : [];
+  return { cuts, edges: [values[0], ...cuts, values[values.length - 1]], binFor: (v) => (v == null ? -1 : cuts.filter((c) => v > c).length) };
+}
+
+function colourMap() {
+  const metric = mapState.metric;
+  const { edges, binFor } = mapBins(metric);
+  mapState.markers.forEach((marker, i) => {
+    const bin = binFor(mapState.points[i][metric]);
+    marker.setStyle({ fillColor: bin < 0 ? MAP_NO_DATA : MAP_BINS[bin] });
+  });
+  if (mapState.legend) mapState.legend.remove();
+  mapState.legend = L.control({ position: "bottomright" });
+  mapState.legend.onAdd = () => {
+    const div = L.DomUtil.create("div", "map-legend");
+    div.innerHTML = `<b>${MAP_METRICS[metric]}</b><br>${MAP_BINS.map(
+      (c, i) => `<i style="background:${c}"></i>${fmtPsf(edges[i])} – ${fmtPsf(edges[i + 1])}`
+    ).join("<br>")}<br><i style="background:${MAP_NO_DATA}"></i>No recent sales`;
+    return div;
+  };
+  mapState.legend.addTo(mapState.map);
+}
+
+function mapPopup(p, reference) {
+  const priced = p.median_psf != null;
+  const premium = priced && p.adjusted_psf ? p.adjusted_psf / p.median_psf - 1 : null;
+  return `<b>${esc(blockLabel(p.unit_id))}</b><br>${esc(titleCase(p.town || ""))} ${p.postal_code ? `· ${esc(p.postal_code)}` : ""}<br>
+    ${
+      priced
+        ? `${fmtPsf(p.median_psf)} psf actual · <b>${fmtPsf(p.adjusted_psf)} psf</b> at ${reference} yrs lease<br>
+           ~${p.lease_years} yrs left at sale${premium != null && Math.abs(premium) >= 0.005 ? ` (${fmtPct(premium)} adjustment)` : ""}<br>
+           ${fmtMoney(p.median_price)} median · ${p.count} sales`
+        : "No recent resales"
+    }<br>
+    ${p.max_floor_lvl ? `${p.max_floor_lvl} storeys · built ${p.year_completed}` : ""}<br>
+    <a class="link popup-open" data-unit="${esc(p.unit_id)}">Open building →</a>`;
+}
+
+function drawLeaseCurve(data) {
+  const curve = data.lease_curve.filter((r) => r.n >= 30);
+  if (!curve.length) return;
+  const pct = (factor) => 100 / factor;
+  const at = (yrs) => curve.reduce((a, b) => (Math.abs(b.lease_years - yrs) < Math.abs(a.lease_years - yrs) ? b : a));
+  $("#map-curve-note").innerHTML = `Estimated from ${fmtNum(curve.reduce((s, r) => s + r.n, 0))} resales since ${fmtMonth(data.since)},
+    holding town, flat type, floor level and month equal. A flat with <b>60 years</b> left sells at about
+    <b>${Math.round(pct(at(60).factor))}%</b> of the $ psf of one with ${data.reference_years} years, and <b>80 years</b> at about
+    <b>${Math.round(pct(at(80).factor))}%</b>. Lease-adjusted $ psf scales each sale up (or down) to its ${data.reference_years}-year
+    equivalent, so you can compare locations without old leases looking like bargains.`;
+  drawChart("chart-lease-curve", {
+    type: "line",
+    data: {
+      labels: curve.map((r) => r.lease_years),
+      datasets: [
+        {
+          label: `% of ${data.reference_years}-year $ psf`,
+          data: curve.map((r) => pct(r.factor)),
+          borderColor: "#c8102e",
+          backgroundColor: "rgba(200,16,46,0.08)",
+          fill: true,
+          tension: 0.25,
+          pointRadius: 0,
+        },
+      ],
+    },
+    options: {
+      plugins: { legend: { display: false }, tooltip: { callbacks: { title: (c) => `${c[0].label} years left`, label: (c) => `${c.parsed.y.toFixed(0)}% of a ${data.reference_years}-year flat` } } },
+      scales: {
+        x: { title: { display: true, text: "Years of lease left at sale" }, ticks: { maxTicksLimit: 12 } },
+        y: { suggestedMin: 50, max: 105, ticks: { callback: (v) => `${v}%` } },
+      },
+    },
+  });
+}
 
 async function loadMap() {
   const map = L.map("map", { preferCanvas: true }).setView([1.3521, 103.8198], 12);
@@ -1938,40 +2020,43 @@ async function loadMap() {
     attribution: "&copy; OpenStreetMap contributors",
   }).addTo(map);
 
-  const data = await api("/api/map");
-  const psfs = data.points.map((p) => p.median_psf).filter((v) => v != null).sort((a, b) => a - b);
-  const q = (p) => psfs[Math.floor(p * (psfs.length - 1))];
-  const cuts = psfs.length ? [q(0.2), q(0.4), q(0.6), q(0.8)] : [];
-  const binFor = (v) => (v == null ? -1 : cuts.filter((c) => v > c).length);
+  const data = (mapState.data = await api("/api/map"));
+  mapState.points = data.points.map((row) => Object.fromEntries(data.columns.map((c, i) => [c, row[i]])));
+  const hasAdjusted = mapState.points.some((p) => p.adjusted_psf != null);
+  if (!hasAdjusted) mapState.metric = "median_psf";
 
-  $("#map-subtitle").textContent = `${fmtNum(data.points.length)} of ${fmtNum(state.meta.block_count)} HDB blocks geocoded so far, coloured by median $ psf since ${fmtMonth(data.since)}. More appear as the geocoder runs — reload to refresh.`;
+  $("#map-subtitle").textContent = `${fmtNum(mapState.points.length)} of ${fmtNum(state.meta.block_count)} HDB blocks, coloured by resales since ${fmtMonth(data.since)}.`;
 
-  mapState.layer = L.layerGroup(
-    data.points.map((p) => {
-      const bin = binFor(p.median_psf);
-      return L.circleMarker([p.latitude, p.longitude], {
-        radius: 5,
-        weight: 1,
-        color: "#fff",
-        fillColor: bin < 0 ? "#bdb3b5" : MAP_BINS[bin],
-        fillOpacity: 0.9,
-      }).bindPopup(
-        `<b>${esc(blockLabel(p.unit_id))}</b><br>${esc(titleCase(p.town || ""))} ${p.postal_code ? `· ${esc(p.postal_code)}` : ""}<br>
-         ${p.median_psf ? `${fmtPsf(p.median_psf)} psf · ${fmtMoney(p.median_price)} median · ${p.count} sales` : "No recent resales"}<br>
-         ${p.max_floor_lvl ? `${p.max_floor_lvl} storeys · built ${p.year_completed}` : ""}<br>
-         <a class="link popup-open" data-unit="${esc(p.unit_id)}">Open building →</a>`
-      );
-    })
-  ).addTo(map);
+  mapState.markers = mapState.points.map((p) =>
+    L.circleMarker([p.latitude, p.longitude], { radius: 5, weight: 1, color: "#fff", fillColor: MAP_NO_DATA, fillOpacity: 0.9 }).bindPopup(
+      () => mapPopup(p, data.reference_years)
+    )
+  );
+  L.layerGroup(mapState.markers).addTo(map);
+  colourMap();
 
-  const legend = L.control({ position: "bottomright" });
-  legend.onAdd = () => {
-    const div = L.DomUtil.create("div", "map-legend");
-    const edges = [psfs[0], ...cuts, psfs[psfs.length - 1]];
-    div.innerHTML = `<b>Median $ psf</b><br>${MAP_BINS.map((c, i) => `<i style="background:${c}"></i>${fmtPsf(edges[i])} – ${fmtPsf(edges[i + 1])}`).join("<br>")}<br><i style="background:#bdb3b5"></i>No recent sales`;
-    return div;
-  };
-  if (psfs.length) legend.addTo(map);
+  if (hasAdjusted) {
+    const toggle = L.control({ position: "topright" });
+    toggle.onAdd = () => {
+      const div = L.DomUtil.create("div", "segmented map-toggle");
+      div.innerHTML = Object.entries(MAP_METRICS)
+        .map(([k, label]) => `<button data-value="${k}" class="${k === mapState.metric ? "active" : ""}">${label}</button>`)
+        .join("");
+      L.DomEvent.disableClickPropagation(div);
+      div.addEventListener("click", (e) => {
+        const btn = e.target.closest("button");
+        if (!btn) return;
+        mapState.metric = btn.dataset.value;
+        $$("button", div).forEach((b) => b.classList.toggle("active", b === btn));
+        colourMap();
+      });
+      return div;
+    };
+    toggle.addTo(map);
+    drawLeaseCurve(data);
+  } else {
+    $("#map-curve-card").style.display = "none";
+  }
 
   L.marker([1.3624, 103.8433], {
     icon: L.divIcon({ className: "otter-marker", html: `<img src="/static/otter.svg" width="34" height="34" alt="">`, iconSize: [34, 34], iconAnchor: [17, 17] }),
