@@ -1511,6 +1511,29 @@ const PERSONA_BLURBS = {
 const PILLAR_SHORT = { transport: "MRT", cbd: "CBD", food: "Food", health: "Clinic", green: "Green", schools: "School", value: "Value", lease: "Lease" };
 
 const fmtDist = (m) => (m == null ? "–" : m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`);
+const fmtMin = (m) => (m == null ? "–" : `${Math.round(m)} min`);
+
+const LINE_INFO = {
+  NSL: ["NS", "#d42e12"],
+  EWL: ["EW", "#009645"],
+  NEL: ["NE", "#9900aa"],
+  CCL: ["CC", "#fa9e0d"],
+  DTL: ["DT", "#005ec4"],
+  TEL: ["TE", "#9d5b25"],
+  BPLRT: ["BP", "#748477"],
+  SKLRT: ["SK", "#748477"],
+  PGLRT: ["PG", "#748477"],
+};
+const lineChips = (csvLines) =>
+  (csvLines || "")
+    .split(",")
+    .filter(Boolean)
+    .map((g) => {
+      const [label, color] = LINE_INFO[g] || [g, "#6f6466"];
+      return `<span class="line-chip" style="background:${color}" title="${esc(g)}">${label}</span>`;
+    })
+    .join("");
+const stationName = (s) => titleCase(s || "");
 
 function scoreCell(v, big = false) {
   if (v == null) return `<span class="score empty">–</span>`;
@@ -1549,10 +1572,18 @@ async function loadLivability() {
         .map((per) => `<tr><td>${esc(per.label)}</td>${m.pillars.map((p) => `<td class="num">${per.weights[p.key] || "–"}</td>`).join("")}</tr>`)
         .join("")}</tbody></table></div>
     <p class="muted small" style="margin: 14px 0 0; line-height: 1.6">
-      Each pillar ranks a block against every other scored HDB block, so 10 means top of the pack and 5.5 is the middle.
-      Distances are straight-line, not walking routes. Sources: LTA MRT/LRT exits, NEA hawker centres, MOH CHAS clinics,
-      NParks parks, MOE primary schools, HDB resale prices. Supermarkets aren't included because data.gov.sg no longer publishes that dataset.
-      Blocks appear here once they've been geocoded.</p>`;
+      Each pillar blends several measures, ranks every block against all other scored HDB blocks, and maps that to 1–10,
+      so 10 means top of the pack and 5.5 is the middle.</p>
+    <p class="muted small" style="margin: 10px 0 0; line-height: 1.6">
+      <b>Transport and CBD times are modelled:</b> walking at 4.8 km/h with a 1.3× detour; buses on their real routes at
+      19 km/h, with a wait that shrinks the more services a stop has; trains between stations at 45 km/h (LRT 28 km/h)
+      plus a 3 min wait and 4 min per line change. Your trip uses whichever is fastest, walking or bus to a station.
+      They're consistent estimates for comparing blocks, not timetabled journeys. Other distances are straight-line.</p>
+    <p class="muted small" style="margin: 10px 0 0; line-height: 1.6">
+      Sources: LTA station exits and codes, bus routes via busrouter.sg (LTA DataMall), NEA hawker centres, MOH CHAS GPs and
+      dentists, HPB polyclinics (list last updated 2023), a curated list of acute and community hospitals, NParks parks,
+      MOE primary schools, HDB resale prices. Supermarkets aren't included because data.gov.sg no longer publishes them.
+      Blocks appear once they've been geocoded.</p>`;
 
   fillSelect($("#liv-town"), state.meta.towns.filter((t) => t !== "LIM CHU KANG"));
   $("#liv-sort").insertAdjacentHTML("beforeend", m.pillars.map((p) => `<option value="${esc(p.key)}">Sort: ${esc(p.label)}</option>`).join(""));
@@ -1582,23 +1613,27 @@ async function loadLivTowns() {
   const data = await withLoading($("#liv-towns").closest(".card"), api("/api/livability/towns", { persona: liv.persona }));
   const pillars = liv.meta.pillars;
   $("#liv-towns").innerHTML = `
-    <thead><tr><th>#</th><th>Town</th><th class="num">Score</th>${pillars.map((p) => `<th class="num" title="${esc(p.label)}">${PILLAR_SHORT[p.key]}</th>`).join("")}</tr></thead>
+    <thead><tr><th>#</th><th>Town</th><th class="num">Score</th><th class="num" title="Median modelled commute to Raffles Place">To CBD</th>
+      ${pillars.map((p) => `<th class="num" title="${esc(p.label)}">${PILLAR_SHORT[p.key]}</th>`).join("")}</tr></thead>
     <tbody>${data.towns
       .map(
         (t, i) => `<tr class="clickable" data-town="${esc(t.town)}"><td class="muted">${i + 1}</td>
           <td><b>${esc(titleCase(t.town))}</b><div class="muted small">${fmtNum(t.blocks)} blocks</div></td>
-          <td class="num">${scoreCell(t.overall, true)}</td>
+          <td class="num">${scoreCell(t.overall, true)}</td><td class="num small">${fmtMin(t.cbd_min)}</td>
           ${pillars.map((p) => `<td class="num">${scoreCell(t[`score_${p.key}`])}</td>`).join("")}</tr>`
       )
       .join("")}</tbody>`;
   highlightLivTown();
 
   const top = data.towns[0];
+  const fastest = data.towns.reduce((a, b) => (b.cbd_min < a.cbd_min ? b : a));
   const persona = liv.meta.personas.find((p) => p.key === liv.persona);
   $("#liv-kpis").innerHTML = `
     <div class="kpi hero"><div class="label">Best town · ${esc(persona.label)}</div>
       <div class="value">${esc(titleCase(top.town))}</div><div class="sub">Median block scores ${top.overall.toFixed(1)} / 10</div></div>
     <div class="kpi" id="liv-top-block"><div class="label">Best block · ${esc(persona.label)}</div><div class="value">–</div></div>
+    <div class="kpi"><div class="label">Shortest commute</div>
+      <div class="value">${esc(titleCase(fastest.town))}</div><div class="sub">~${Math.round(fastest.cbd_min)} min median to Raffles Place</div></div>
     <div class="kpi"><div class="label">Blocks scored</div><div class="value">${fmtNum(liv.meta.scored_blocks)}</div>
       <div class="sub">of ${fmtNum(liv.meta.residential_blocks)} residential blocks</div></div>`;
 }
@@ -1625,19 +1660,20 @@ async function loadLivBlocks(reset) {
   liv.total = data.total;
   const pillars = liv.meta.pillars;
   $("#liv-blocks").innerHTML = `
-    <thead><tr><th>#</th><th>Block</th><th class="num">Score</th>${pillars.map((p) => `<th class="num" title="${esc(p.label)}">${PILLAR_SHORT[p.key]}</th>`).join("")}
+    <thead><tr><th>#</th><th>Block</th><th class="num">Score</th><th class="num" title="Modelled commute to Raffles Place">To CBD</th>
+      ${pillars.map((p) => `<th class="num" title="${esc(p.label)}">${PILLAR_SHORT[p.key]}</th>`).join("")}
       <th class="num">$ psf</th><th class="num">Lease left</th></tr></thead>
     <tbody>${
       liv.rows
         .map(
           (r, i) => `<tr class="clickable" data-unit="${esc(r.unit_id)}"><td class="muted">${i + 1}</td>
             <td>${esc(blockLabel(r.unit_id))}<div class="muted small">${esc(titleCase(r.town))}</div></td>
-            <td class="num">${scoreCell(r.overall, true)}</td>
+            <td class="num">${scoreCell(r.overall, true)}</td><td class="num small">${fmtMin(r.cbd_min)}</td>
             ${pillars.map((p) => `<td class="num">${scoreCell(r[`score_${p.key}`])}</td>`).join("")}
             <td class="num">${fmtPsf(r.median_psf)}${r.psf_source === "town" ? `<span class="muted" title="No recent resales; town median used">*</span>` : ""}</td>
             <td class="num">${r.lease_left_years != null ? `${r.lease_left_years} yrs` : "–"}</td></tr>`
         )
-        .join("") || `<tr><td colspan="${pillars.length + 5}" class="muted">No blocks match these filters</td></tr>`
+        .join("") || `<tr><td colspan="${pillars.length + 6}" class="muted">No blocks match these filters</td></tr>`
     }</tbody>`;
   $("#liv-count").textContent = `Showing ${fmtNum(liv.rows.length)} of ${fmtNum(liv.total)} blocks · * no recent resales, town median $ psf used`;
   $("#liv-more").style.display = liv.rows.length < liv.total ? "" : "none";
@@ -1663,7 +1699,7 @@ function renderBlockLivability(d) {
   }
   const pillars = [
     ["transport", "Transport"],
-    ["cbd", "CBD access"],
+    ["cbd", "CBD commute"],
     ["food", "Hawker food"],
     ["health", "Healthcare"],
     ["green", "Green space"],
@@ -1683,10 +1719,23 @@ function renderBlockLivability(d) {
           .join("")}</div>
         <p class="small muted" style="margin: 10px 0 14px">Balanced score beats ${Math.round(lv.better_than * 100)}% of scored HDB blocks.</p>
         <table class="nearby-table"><tbody>
-          <tr><td>MRT / LRT</td><td><b>${esc(titleCase(lv.nearest_mrt).replace(/\b(Mrt|Lrt)\b/g, (m) => m.toUpperCase()))}</b></td><td class="num">${fmtDist(lv.nearest_mrt_m)}</td><td class="muted small">${lv.stations_1km} stations ≤1 km</td></tr>
-          <tr><td>CBD</td><td>Raffles Place</td><td class="num">${lv.cbd_km.toFixed(1)} km</td><td class="muted small">straight line</td></tr>
+          <tr class="group"><td colspan="4">Transport</td></tr>
+          <tr><td>Rail</td><td><b>${esc(stationName(lv.rail_station))}</b> ${lineChips(lv.rail_station_lines)}</td>
+            <td class="num">${fmtMin(lv.rail_min)}</td><td class="muted small">${lv.rail_how === "walk" ? "walk" : esc(lv.rail_how.replace("bus", "by bus"))}</td></tr>
+          <tr><td>Interchange</td><td>${lv.interchange_via ? `via ${esc(stationName(lv.interchange_via))}` : "–"}</td>
+            <td class="num">${fmtMin(lv.interchange_min)}</td><td class="muted small">to a 2+ line station</td></tr>
+          <tr><td>Lines ≤15 min</td><td>${lineChips(lv.lines_15min_list) || "–"}</td><td class="num">${lv.lines_15min}</td><td class="muted small">LRT counts ½</td></tr>
+          <tr><td>Buses</td><td>${lv.bus_services_400m} services</td><td class="num"></td><td class="muted small">stops within 400 m</td></tr>
+          <tr><td>CBD</td><td>Raffles Place${lv.cbd_via && lv.cbd_via !== "walk" ? ` · board at ${esc(stationName(lv.cbd_via))}` : ""}</td>
+            <td class="num"><b>${fmtMin(lv.cbd_min)}</b></td><td class="muted small">door to door, est.</td></tr>
+          <tr class="group"><td colspan="4">Healthcare</td></tr>
+          <tr><td>GP</td><td><b>${esc(titleCase(lv.nearest_gp))}</b></td><td class="num">${fmtDist(lv.nearest_gp_m)}</td>
+            <td class="muted small">${lv.gps_1km} GPs · ${lv.dentists_1km} dentists ≤1 km</td></tr>
+          <tr><td>Polyclinic</td><td><b>${esc(lv.nearest_polyclinic)}</b></td><td class="num">${fmtDist(lv.nearest_polyclinic_m)}</td><td></td></tr>
+          <tr><td>Hospital</td><td><b>${esc(lv.nearest_hospital)}</b></td><td class="num">${fmtDist(lv.nearest_hospital_m)}</td><td class="muted small">acute</td></tr>
+          <tr><td>Community</td><td><b>${esc(lv.nearest_community_hospital)}</b></td><td class="num">${fmtDist(lv.nearest_community_hospital_m)}</td><td class="muted small">community hospital</td></tr>
+          <tr class="group"><td colspan="4">Everyday</td></tr>
           <tr><td>Hawker</td><td><b>${esc(lv.nearest_hawker)}</b></td><td class="num">${fmtDist(lv.nearest_hawker_m)}</td><td class="muted small">${lv.hawkers_1km} ≤1 km</td></tr>
-          <tr><td>Clinic</td><td><b>${esc(titleCase(lv.nearest_clinic))}</b></td><td class="num">${fmtDist(lv.nearest_clinic_m)}</td><td class="muted small">${lv.clinics_1km} CHAS ≤1 km</td></tr>
           <tr><td>Park</td><td><b>${esc(titleCase(lv.nearest_park))}</b></td><td class="num">${fmtDist(lv.nearest_park_m)}</td><td class="muted small">${lv.parks_1km} ≤1 km</td></tr>
           <tr><td>Primary school</td><td><b>${esc(titleCase(lv.nearest_primary))}</b></td><td class="num">${fmtDist(lv.nearest_primary_m)}</td><td class="muted small">${lv.primary_1km} ≤1 km · ${lv.primary_2km} ≤2 km</td></tr>
         </tbody></table>

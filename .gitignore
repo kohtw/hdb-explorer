@@ -5,3 +5,4 @@ __pycache__/
 data/*
 !data/address_geocode_cache.csv
 !data/school_geocode_cache.csv
+!data/hospital_geocode_cache.csv

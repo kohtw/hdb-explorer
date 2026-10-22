@@ -1,7 +1,9 @@
-"""Download the amenity datasets used for livability scores from data.gov.sg.
+"""Download the amenity and transport datasets used for livability scores.
 
-Saves to data/amenities/. GeoJSON layers already have coordinates; the MOE
-schools list only has postal codes and is geocoded by build_livability.py.
+Saves to data/amenities/. Most come from data.gov.sg. Bus stops and routes
+come from busrouter.sg, which republishes LTA DataMall's bus data as open
+JSON (DataMall itself needs an API key). The MOE schools list only has postal
+codes and is geocoded by build_livability.py.
 """
 
 import json
@@ -16,6 +18,12 @@ DATASETS = {
     "chas_clinics.geojson": "d_548c33ea2d99e29ec63a7cc9edcccedc",  # MOH CHAS clinics
     "parks.geojson": "d_0542d48f0991541706b58059381a6eca",  # NParks parks (points)
     "schools.csv": "d_688b934f82c1059ed0a6993d2a829089",  # MOE general information of schools
+    "polyclinics.geojson": "d_3ca2a28059588f297908b32da4ac3cbe",  # HPB polyclinic locations
+    "station_codes.csv": "d_d312a5b127e1ae74299b8ae664cedd4e",  # LTA station codes and lines
+}
+EXTERNAL = {
+    "bus_stops.json": "https://data.busrouter.sg/v1/stops.min.json",
+    "bus_services.json": "https://data.busrouter.sg/v1/services.min.json",
 }
 POLL_DOWNLOAD_URL = "https://api-open.data.gov.sg/v1/public/api/datasets/{dataset_id}/poll-download"
 OUTPUT_DIR = pathlib.Path(__file__).parent / "data" / "amenities"
@@ -44,6 +52,10 @@ def main() -> None:
         if poll["code"] != 0:
             raise RuntimeError(f"poll-download failed for {dataset_id}: {poll['errorMsg']}")
         body = fetch(poll["data"]["url"])
+        (OUTPUT_DIR / filename).write_bytes(body)
+        print(f"Saved {filename} ({len(body):,} bytes)")
+    for filename, url in EXTERNAL.items():
+        body = fetch(url)
         (OUTPUT_DIR / filename).write_bytes(body)
         print(f"Saved {filename} ({len(body):,} bytes)")
 

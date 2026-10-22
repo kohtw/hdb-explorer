@@ -1112,6 +1112,29 @@ table.weights th {
   white-space: normal;
 }
 
+.nearby-table tr.group td {
+  padding: 14px 8px 4px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--red);
+  border-bottom: 2px solid var(--red-soft);
+  background: transparent;
+}
+
+.line-chip {
+  display: inline-block;
+  padding: 1px 5px;
+  margin-left: 3px;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  vertical-align: 1px;
+}
+
 .nearby-table td:first-child {
   color: var(--muted);
   font-size: 0.78rem;

@@ -1071,7 +1071,7 @@ def api_block():
 PILLAR_KEYS = [p["key"] for p in PILLARS]
 PERSONA_BY_KEY = {p["key"]: p for p in PERSONAS}
 LIV_BLOCK_COLUMNS = (
-    "unit_id, block, street_name, town, median_psf, psf_source, lease_left_years, "
+    "unit_id, block, street_name, town, median_psf, psf_source, lease_left_years, rail_min, cbd_min, "
     + ", ".join(f"score_{k}" for k in PILLAR_KEYS)
 )
 
@@ -1110,7 +1110,8 @@ def api_livability_towns():
         pillar_medians = ", ".join(f"median(score_{k}) AS score_{k}" for k in PILLAR_KEYS)
         rows = db.execute(
             f"""
-            SELECT town, COUNT(*) AS blocks, median({overall_expr(persona)}) AS overall, {pillar_medians}
+            SELECT town, COUNT(*) AS blocks, median({overall_expr(persona)}) AS overall, {pillar_medians},
+                   median(cbd_min) AS cbd_min, median(rail_min) AS rail_min
             FROM livability GROUP BY town ORDER BY overall DESC
             """
         )

@@ -1,18 +1,17 @@
 """Score every geocoded HDB residential block on livability pillars (1-10).
 
-Reads data/hdb.db (blocks, geocodes, resales) and the amenity layers saved by
+Reads data/hdb.db (blocks, geocodes, resales) and the layers saved by
 download_amenities.py, and writes a `livability` table to data/hdb.db.
 
-Each pillar's raw measures (straight-line distance to the nearest amenity,
-counts within a radius, $psf, lease left) are converted to percentile ranks
-across all scored blocks, then mapped to 1-10. Scores are therefore relative
-to other HDB blocks, not absolute standards. Run after build_webapp_db.py.
+Each pillar blends several raw measures. Every measure is converted to a
+percentile rank across all scored blocks, the ranks are combined with fixed
+weights, and the result is mapped to 1-10. Scores are therefore relative to
+other HDB blocks, not absolute standards. Run after build_webapp_db.py.
 """
 
 import bisect
 import csv
 import json
-import math
 import os
 import pathlib
 import re
@@ -21,26 +20,53 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import defaultdict
 
 from build_webapp_db import Median
+from geo import PointIndex, distance_m
+from transport_model import CBD_POINT, TransportModel
 
 ROOT = pathlib.Path(__file__).parent
 DB_FILE = ROOT / "data" / "hdb.db"
 AMENITY_DIR = ROOT / "data" / "amenities"
 SCHOOL_GEOCODE_CACHE = ROOT / "data" / "school_geocode_cache.csv"
+HOSPITAL_GEOCODE_CACHE = ROOT / "data" / "hospital_geocode_cache.csv"
 ONEMAP_SEARCH_URL = "https://www.onemap.gov.sg/api/common/elastic/search"
 
-CBD = (1.2840, 103.8514)  # Raffles Place MRT
 LEASE_YEARS = 99
 PRIMARY_LEVELS = {"PRIMARY", "MIXED LEVEL (P1-S4)"}
 OPEN_HAWKER_STATUSES = {"Existing", "Existing (new)", "Existing (replacement)", "Interim Centre"}
+MISSING_MINUTES = 99
+
+# No open dataset lists hospitals, so they're curated here and geocoded once by name.
+HOSPITALS = {
+    "acute": [
+        "Singapore General Hospital", "Changi General Hospital", "KK Women's and Children's Hospital",
+        "National University Hospital", "Ng Teng Fong General Hospital", "Khoo Teck Puat Hospital",
+        "Tan Tock Seng Hospital", "Sengkang General Hospital", "Alexandra Hospital", "Woodlands Hospital",
+        "Mount Elizabeth Hospital", "Mount Elizabeth Novena Hospital", "Gleneagles Hospital",
+        "Parkway East Hospital", "Mount Alvernia Hospital", "Raffles Hospital", "Farrer Park Hospital",
+        "Thomson Medical Centre",
+    ],
+    "community": [
+        "Ang Mo Kio - Thye Hua Kwan Hospital", "St. Luke's Hospital",
+        "Ren Ci Community Hospital", "Yishun Community Hospital", "Outram Community Hospital",
+        "Sengkang Community Hospital", "Jurong Community Hospital", "St. Andrew's Community Hospital",
+    ],
+}
 
 PILLARS = [
-    {"key": "transport", "label": "Transport", "desc": "Walk to the nearest MRT/LRT exit, and stations within 1 km"},
-    {"key": "cbd", "label": "CBD access", "desc": "Straight-line distance to Raffles Place"},
+    {
+        "key": "transport", "label": "Transport",
+        "desc": "Minutes to the nearest MRT/LRT walking or by bus, rail lines within 15 min, time to an interchange, "
+                "lines at your station, bus services within 400 m",
+    },
+    {"key": "cbd", "label": "CBD commute", "desc": "Modelled public transport time to Raffles Place, door to door"},
     {"key": "food", "label": "Hawker food", "desc": "Nearest hawker centre, and hawker centres within 1 km"},
-    {"key": "health", "label": "Healthcare", "desc": "Nearest CHAS clinic, and CHAS clinics within 1 km"},
+    {
+        "key": "health", "label": "Healthcare",
+        "desc": "Nearest GP and GPs within 1 km, dentists within 1 km, nearest polyclinic, acute hospital "
+                "and community hospital",
+    },
     {"key": "green", "label": "Green space", "desc": "Nearest park, and parks within 1 km"},
     {"key": "schools", "label": "Schools", "desc": "Primary schools within 1 km and 2 km (MOE registration distances)"},
     {"key": "value", "label": "Value", "desc": "Block's median $psf over the last 3 years (cheaper scores higher)"},
@@ -71,59 +97,8 @@ PERSONAS = [
     },
 ]
 
-M_PER_DEG_LAT = 110_574
-M_PER_DEG_LON = 111_320 * math.cos(math.radians(1.35))
 
-
-def distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    # Equirectangular approximation; error is negligible across Singapore.
-    return math.hypot((lat2 - lat1) * M_PER_DEG_LAT, (lon2 - lon1) * M_PER_DEG_LON)
-
-
-class PointIndex:
-    """Grid index of (lat, lon, name) points for radius counts and nearest lookups."""
-
-    CELL_DEG = 0.01
-    CELL_M = CELL_DEG * min(M_PER_DEG_LAT, M_PER_DEG_LON)
-
-    def __init__(self, points: list[tuple[float, float, str]]):
-        self.points = points
-        self.cells = defaultdict(list)
-        for p in points:
-            self.cells[self._cell(p[0], p[1])].append(p)
-
-    def _cell(self, lat: float, lon: float) -> tuple[int, int]:
-        return int(lat // self.CELL_DEG), int(lon // self.CELL_DEG)
-
-    def _ring(self, cy: int, cx: int, k: int):
-        for y in range(cy - k, cy + k + 1):
-            for x in range(cx - k, cx + k + 1):
-                if max(abs(y - cy), abs(x - cx)) == k:
-                    yield from self.cells.get((y, x), ())
-
-    def within(self, lat: float, lon: float, radius_m: float) -> list[tuple[float, str]]:
-        cy, cx = self._cell(lat, lon)
-        k_max = math.ceil(radius_m / self.CELL_M)
-        found = []
-        for k in range(k_max + 1):
-            for p in self._ring(cy, cx, k):
-                d = distance_m(lat, lon, p[0], p[1])
-                if d <= radius_m:
-                    found.append((d, p[2]))
-        return found
-
-    def nearest(self, lat: float, lon: float) -> tuple[float, str]:
-        cy, cx = self._cell(lat, lon)
-        best = (math.inf, "")
-        for k in range(60):
-            for p in self._ring(cy, cx, k):
-                d = distance_m(lat, lon, p[0], p[1])
-                if d < best[0]:
-                    best = (d, p[2])
-            # Every point within k cells' distance has now been checked.
-            if best[0] <= k * self.CELL_M:
-                return best
-        return best
+# ---------- data loading ----------
 
 
 def load_geojson_points(filename: str, name_of, keep=lambda props: True) -> list[tuple[float, float, str]]:
@@ -138,13 +113,12 @@ def load_geojson_points(filename: str, name_of, keep=lambda props: True) -> list
     return points
 
 
-def chas_name(props: dict) -> str:
-    match = re.search(r"<th>HCI_NAME</th>\s*<td>(.*?)</td>", props.get("Description", ""))
-    return match.group(1).strip() if match else "CHAS clinic"
+def chas_field(props: dict, field: str) -> str:
+    match = re.search(rf"<th>{field}</th>\s*<td>(.*?)</td>", props.get("Description", ""))
+    return match.group(1).strip() if match else ""
 
 
-def onemap_search(search: str, postal: str | None = None) -> tuple[float, float] | None:
-    """First OneMap match for a search string, preferring one whose postal code matches."""
+def onemap_search(search: str) -> list[dict]:
     query = urllib.parse.urlencode({"searchVal": search, "returnGeom": "Y", "getAddrDetails": "Y", "pageNum": "1"})
     headers = {"User-Agent": "Mozilla/5.0 (compatible; hdb-explorer/1.0)"}
     if os.environ.get("ONEMAP_API_TOKEN"):
@@ -153,62 +127,106 @@ def onemap_search(search: str, postal: str | None = None) -> tuple[float, float]
     for attempt in range(6):
         try:
             with urllib.request.urlopen(request, timeout=15) as response:
-                results = json.load(response).get("results") or []
-            break
+                return json.load(response).get("results") or []
         except (urllib.error.URLError, TimeoutError):
             time.sleep(2**attempt)
-    else:
-        return None
+    return []
+
+
+def name_tokens(text: str) -> set[str]:
+    return set(re.sub(r"[^A-Z0-9 ]", "", text.upper().replace("-", " ")).split())
+
+
+def pick_result(results: list[dict], postal: str | None = None, required: set[str] | None = None) -> dict | None:
     for r in results:
         if postal and r.get("POSTAL") == postal:
-            return float(r["LATITUDE"]), float(r["LONGITUDE"])
-    return (float(results[0]["LATITUDE"]), float(results[0]["LONGITUDE"])) if results else None
+            return r
+    if required:
+        for r in results:
+            if required <= name_tokens(f"{r.get('SEARCHVAL', '')} {r.get('BUILDING', '')}"):
+                return r
+        return None
+    return results[0] if results else None
 
 
-def geocode_school(name: str, postal: str) -> tuple[float, float] | None:
-    # Some schools' postal codes aren't indexed by OneMap; their names usually are.
-    return onemap_search(postal, postal) or onemap_search(name, postal)
-
-
-def load_primary_schools() -> list[tuple[float, float, str]]:
-    """Primary schools with coordinates, geocoding new postal codes via OneMap (cached)."""
-    with (AMENITY_DIR / "schools.csv").open(encoding="utf-8-sig", newline="") as f:
-        schools = [r for r in csv.DictReader(f) if r["mainlevel_code"].strip() in PRIMARY_LEVELS]
-
+def cached_geocodes(cache_file: pathlib.Path, items: list[dict], key: str, locate) -> dict[str, dict]:
+    """Geocode items not yet in the CSV cache (or cached without coordinates), appending as we go."""
     cache = {}
-    if SCHOOL_GEOCODE_CACHE.exists():
-        with SCHOOL_GEOCODE_CACHE.open(encoding="utf-8", newline="") as f:
-            cache = {r["postal_code"]: r for r in csv.DictReader(f)}
-
-    missing = [s for s in schools if not cache.get(s["postal_code"].strip().zfill(6), {}).get("latitude")]
+    fields = list(items[0].keys()) + ["latitude", "longitude", "matched"]
+    if cache_file.exists():
+        with cache_file.open(encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            cache = {r[key]: r for r in reader}
+            fields = reader.fieldnames or fields
+    missing = [item for item in items if not cache.get(item[key], {}).get("latitude")]
     if missing:
-        print(f"Geocoding {len(missing)} schools via OneMap")
-        new_file = not SCHOOL_GEOCODE_CACHE.exists()
-        with SCHOOL_GEOCODE_CACHE.open("a", encoding="utf-8", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["postal_code", "school_name", "latitude", "longitude"])
+        print(f"Geocoding {len(missing)} entries for {cache_file.name} via OneMap")
+        new_file = not cache_file.exists()
+        with cache_file.open("a", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
             if new_file:
                 writer.writeheader()
-            for s in missing:
-                postal = s["postal_code"].strip().zfill(6)
-                coords = geocode_school(s["school_name"].strip(), postal)
+            for item in missing:
+                result = locate(item)
                 row = {
-                    "postal_code": postal,
-                    "school_name": s["school_name"].strip(),
-                    "latitude": coords[0] if coords else "",
-                    "longitude": coords[1] if coords else "",
+                    **item,
+                    "latitude": result["LATITUDE"] if result else "",
+                    "longitude": result["LONGITUDE"] if result else "",
+                    "matched": result.get("ADDRESS", "") if result else "",
                 }
                 writer.writerow(row)
                 f.flush()
-                cache[postal] = row
+                cache[item[key]] = row
                 time.sleep(0.3)
+    return cache
 
-    points = []
-    for s in schools:
-        row = cache.get(s["postal_code"].strip().zfill(6))
-        if row and row["latitude"]:
-            points.append((float(row["latitude"]), float(row["longitude"]), s["school_name"].strip()))
+
+def load_primary_schools() -> list[tuple[float, float, str]]:
+    with (AMENITY_DIR / "schools.csv").open(encoding="utf-8-sig", newline="") as f:
+        schools = [
+            {"postal_code": r["postal_code"].strip().zfill(6), "school_name": r["school_name"].strip()}
+            for r in csv.DictReader(f)
+            if r["mainlevel_code"].strip() in PRIMARY_LEVELS
+        ]
+
+    def locate(school):
+        # Some schools' postal codes aren't indexed by OneMap; their names usually are.
+        return pick_result(onemap_search(school["postal_code"]), postal=school["postal_code"]) or pick_result(
+            onemap_search(school["school_name"]), postal=school["postal_code"]
+        )
+
+    cache = cached_geocodes(SCHOOL_GEOCODE_CACHE, schools, "postal_code", locate)
+    points = [
+        (float(c["latitude"]), float(c["longitude"]), s["school_name"])
+        for s in schools
+        if (c := cache.get(s["postal_code"])) and c.get("latitude")
+    ]
     print(f"{len(points)} of {len(schools)} primary schools located")
     return points
+
+
+def load_hospitals() -> dict[str, list[tuple[float, float, str]]]:
+    items = [{"name": name, "kind": kind} for kind, names in HOSPITALS.items() for name in names]
+
+    generic = {"HOSPITAL", "GENERAL", "COMMUNITY", "CENTRE", "ST", "AND"}
+
+    def locate(item):
+        # Require every distinctive word so OneMap's fuzzy search can't return a neighbouring building.
+        return pick_result(onemap_search(item["name"]), required=name_tokens(item["name"]) - generic)
+
+    cache = cached_geocodes(HOSPITAL_GEOCODE_CACHE, items, "name", locate)
+    located = {kind: [] for kind in HOSPITALS}
+    for item in items:
+        c = cache.get(item["name"])
+        if c and c.get("latitude"):
+            located[item["kind"]].append((float(c["latitude"]), float(c["longitude"]), item["name"]))
+        else:
+            print(f"  could not locate {item['name']}")
+    print(", ".join(f"{len(v)} {k} hospitals" for k, v in located.items()) + " located")
+    return located
+
+
+# ---------- scoring ----------
 
 
 def percentile_ranks(values: list[float], higher_is_better: bool) -> list[float]:
@@ -223,6 +241,11 @@ def percentile_ranks(values: list[float], higher_is_better: bool) -> list[float]
         pct = mid / (n - 1)
         ranks.append(pct if higher_is_better else 1 - pct)
     return ranks
+
+
+def blend(parts: list[tuple[float, list[float]]]) -> list[float]:
+    total = sum(w for w, _ in parts)
+    return [sum(w * ranks[i] for w, ranks in parts) / total for i in range(len(parts[0][1]))]
 
 
 def main() -> None:
@@ -243,9 +266,7 @@ def main() -> None:
     ).fetchall()
     block_psf = {
         r["unit_id"]: r["psf"]
-        for r in conn.execute(
-            "SELECT unit_id, median(price_psf) AS psf FROM transactions WHERE month > ? GROUP BY unit_id", (since,)
-        )
+        for r in conn.execute("SELECT unit_id, median(price_psf) AS psf FROM transactions WHERE month > ? GROUP BY unit_id", (since,))
     }
     town_psf = {
         r["town"]: r["psf"]
@@ -256,22 +277,40 @@ def main() -> None:
         for r in conn.execute("SELECT unit_id, MIN(lease_commence_date) AS start FROM transactions GROUP BY unit_id")
     }
 
-    mrt = PointIndex(load_geojson_points("mrt_exits.geojson", lambda p: p["STATION_NA"].strip()))
-    hawkers = PointIndex(
-        load_geojson_points(
-            "hawker_centres.geojson", lambda p: p["NAME"].strip(), lambda p: p.get("STATUS") in OPEN_HAWKER_STATUSES
-        )
+    transport = TransportModel(
+        AMENITY_DIR / "mrt_exits.geojson",
+        AMENITY_DIR / "station_codes.csv",
+        AMENITY_DIR / "bus_stops.json",
+        AMENITY_DIR / "bus_services.json",
     )
-    clinics = PointIndex(load_geojson_points("chas_clinics.geojson", chas_name))
+    if transport.unmatched_exit_stations:
+        print("Stations without line codes (ignored for lines/CBD):", transport.unmatched_exit_stations)
+    exits = PointIndex(load_geojson_points("mrt_exits.geojson", lambda p: p["STATION_NA"].strip()))
+    hawkers = PointIndex(
+        load_geojson_points("hawker_centres.geojson", lambda p: p["NAME"].strip(), lambda p: p.get("STATUS") in OPEN_HAWKER_STATUSES)
+    )
+    gps = PointIndex(
+        load_geojson_points("chas_clinics.geojson", lambda p: chas_field(p, "HCI_NAME"), lambda p: chas_field(p, "LICENCE_TYPE") == "MC")
+    )
+    dentists = PointIndex(
+        load_geojson_points("chas_clinics.geojson", lambda p: chas_field(p, "HCI_NAME"), lambda p: chas_field(p, "LICENCE_TYPE") == "MD")
+    )
+    polyclinics = PointIndex(load_geojson_points("polyclinics.geojson", lambda p: p["NAME"].strip()))
+    hospitals = load_hospitals()
+    acute = PointIndex(hospitals["acute"])
+    community = PointIndex(hospitals["community"])
     parks = PointIndex(load_geojson_points("parks.geojson", lambda p: p["NAME"].strip()))
     schools = PointIndex(load_primary_schools())
 
     rows = []
     for b in blocks:
         lat, lon = b["latitude"], b["longitude"]
-        mrt_d, mrt_name = mrt.nearest(lat, lon)
+        mrt_d, _ = exits.nearest(lat, lon)
         hawker_d, hawker_name = hawkers.nearest(lat, lon)
-        clinic_d, clinic_name = clinics.nearest(lat, lon)
+        gp_d, gp_name = gps.nearest(lat, lon)
+        poly_d, poly_name = polyclinics.nearest(lat, lon)
+        acute_d, acute_name = acute.nearest(lat, lon)
+        comm_d, comm_name = community.nearest(lat, lon)
         park_d, park_name = parks.nearest(lat, lon)
         school_d, school_name = schools.nearest(lat, lon)
         psf = block_psf.get(b["unit_id"])
@@ -284,16 +323,22 @@ def main() -> None:
                 "town": b["town"],
                 "latitude": lat,
                 "longitude": lon,
-                "nearest_mrt_m": round(mrt_d),
-                "nearest_mrt": mrt_name,
-                "stations_1km": len({name for _, name in mrt.within(lat, lon, 1000)}),
-                "cbd_km": round(distance_m(lat, lon, *CBD) / 1000, 2),
+                "nearest_exit_m": round(mrt_d),
+                **transport.access(lat, lon),
+                "cbd_km": round(distance_m(lat, lon, *CBD_POINT) / 1000, 2),
                 "nearest_hawker_m": round(hawker_d),
                 "nearest_hawker": hawker_name,
                 "hawkers_1km": len(hawkers.within(lat, lon, 1000)),
-                "nearest_clinic_m": round(clinic_d),
-                "nearest_clinic": clinic_name,
-                "clinics_1km": len(clinics.within(lat, lon, 1000)),
+                "nearest_gp_m": round(gp_d),
+                "nearest_gp": gp_name,
+                "gps_1km": len(gps.within(lat, lon, 1000)),
+                "dentists_1km": len(dentists.within(lat, lon, 1000)),
+                "nearest_polyclinic_m": round(poly_d),
+                "nearest_polyclinic": poly_name,
+                "nearest_hospital_m": round(acute_d),
+                "nearest_hospital": acute_name,
+                "nearest_community_hospital_m": round(comm_d),
+                "nearest_community_hospital": comm_name,
                 "nearest_park_m": round(park_d),
                 "nearest_park": park_name,
                 "parks_1km": len(parks.within(lat, lon, 1000)),
@@ -307,26 +352,39 @@ def main() -> None:
             }
         )
 
-    def col(key):
-        return [r[key] for r in rows]
+    def col(key, missing=None):
+        return [r[key] if r[key] is not None else missing for r in rows]
 
-    def avg(*lists):
-        return [sum(vals) / len(vals) for vals in zip(*lists)]
+    def rank(key, higher_is_better, missing=None):
+        return percentile_ranks(col(key, missing), higher_is_better)
 
-    lease_values = [v if v is not None else 0 for v in col("lease_left_years")]
+    station_mrt_lines = [transport.mrt_line_count(r["rail_station"]) for r in rows]
     pillar_pcts = {
-        "transport": avg(percentile_ranks(col("nearest_mrt_m"), False), percentile_ranks(col("stations_1km"), True)),
-        "cbd": percentile_ranks(col("cbd_km"), False),
-        "food": avg(percentile_ranks(col("nearest_hawker_m"), False), percentile_ranks(col("hawkers_1km"), True)),
-        "health": avg(percentile_ranks(col("nearest_clinic_m"), False), percentile_ranks(col("clinics_1km"), True)),
-        "green": avg(percentile_ranks(col("nearest_park_m"), False), percentile_ranks(col("parks_1km"), True)),
-        "schools": avg(
-            percentile_ranks(col("primary_1km"), True),
-            percentile_ranks(col("primary_2km"), True),
-            percentile_ranks(col("nearest_primary_m"), False),
-        ),
-        "value": percentile_ranks(col("median_psf"), False),
-        "lease": percentile_ranks(lease_values, True),
+        "transport": blend([
+            (0.35, rank("rail_min", False)),
+            (0.20, rank("lines_15min", True)),
+            (0.15, rank("interchange_min", False, MISSING_MINUTES)),
+            (0.15, rank("bus_services_400m", True)),
+            (0.15, percentile_ranks(station_mrt_lines, True)),
+        ]),
+        "cbd": rank("cbd_min", False),
+        "food": blend([(0.5, rank("nearest_hawker_m", False)), (0.5, rank("hawkers_1km", True))]),
+        "health": blend([
+            (0.20, rank("nearest_gp_m", False)),
+            (0.15, rank("gps_1km", True)),
+            (0.05, rank("dentists_1km", True)),
+            (0.25, rank("nearest_polyclinic_m", False)),
+            (0.25, rank("nearest_hospital_m", False)),
+            (0.10, rank("nearest_community_hospital_m", False)),
+        ]),
+        "green": blend([(0.5, rank("nearest_park_m", False)), (0.5, rank("parks_1km", True))]),
+        "schools": blend([
+            (1, rank("primary_1km", True)),
+            (1, rank("primary_2km", True)),
+            (1, rank("nearest_primary_m", False)),
+        ]),
+        "value": rank("median_psf", False),
+        "lease": rank("lease_left_years", True, 0),
     }
     for i, row in enumerate(rows):
         for key, pcts in pillar_pcts.items():
