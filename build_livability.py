@@ -36,6 +36,7 @@ LEASE_YEARS = 99
 PRIMARY_LEVELS = {"PRIMARY", "MIXED LEVEL (P1-S4)"}
 OPEN_HAWKER_STATUSES = {"Existing", "Existing (new)", "Existing (replacement)", "Interim Centre"}
 MISSING_MINUTES = 99
+NEUTRAL_SCORE = 5.0
 
 # No open dataset lists hospitals, so they're curated here and geocoded once by name.
 HOSPITALS = {
@@ -69,8 +70,14 @@ PILLARS = [
     },
     {"key": "green", "label": "Green space", "desc": "Nearest park, and parks within 1 km"},
     {"key": "schools", "label": "Schools", "desc": "Primary schools within 1 km and 2 km (MOE registration distances)"},
-    {"key": "value", "label": "Value", "desc": "Block's median $psf over the last 3 years (cheaper scores higher)"},
-    {"key": "lease", "label": "Lease", "desc": "Years left on the 99-year lease"},
+    {
+        "key": "value", "label": "Value",
+        "desc": "Block's median $psf over the last 3 years (cheaper scores higher); 5.0 if it had no resales",
+    },
+    {
+        "key": "lease", "label": "Lease",
+        "desc": "Years left: 99 minus years since the lease began (from resale records, else year completed)",
+    },
 ]
 
 PERSONAS = [
@@ -268,10 +275,6 @@ def main() -> None:
         r["unit_id"]: r["psf"]
         for r in conn.execute("SELECT unit_id, median(price_psf) AS psf FROM transactions WHERE month > ? GROUP BY unit_id", (since,))
     }
-    town_psf = {
-        r["town"]: r["psf"]
-        for r in conn.execute("SELECT town, median(price_psf) AS psf FROM transactions WHERE month > ? GROUP BY town", (since,))
-    }
     lease_start = {
         r["unit_id"]: r["start"]
         for r in conn.execute("SELECT unit_id, MIN(lease_commence_date) AS start FROM transactions GROUP BY unit_id")
@@ -346,8 +349,7 @@ def main() -> None:
                 "nearest_primary": school_name,
                 "primary_1km": len(schools.within(lat, lon, 1000)),
                 "primary_2km": len(schools.within(lat, lon, 2000)),
-                "median_psf": round(psf or town_psf.get(b["town"]) or 0, 2),
-                "psf_source": "block" if psf else "town",
+                "median_psf": round(psf, 2) if psf else None,
                 "lease_left_years": LEASE_YEARS - (current_year - start) if start else None,
             }
         )
@@ -357,6 +359,15 @@ def main() -> None:
 
     def rank(key, higher_is_better, missing=None):
         return percentile_ranks(col(key, missing), higher_is_better)
+
+    def rank_known(key, higher_is_better):
+        """Percentile ranks among rows that have a value; None where the value is missing."""
+        known = [i for i, r in enumerate(rows) if r[key] is not None]
+        ranks = percentile_ranks([rows[i][key] for i in known], higher_is_better)
+        out = [None] * len(rows)
+        for i, pct in zip(known, ranks):
+            out[i] = pct
+        return out
 
     station_mrt_lines = [transport.mrt_line_count(r["rail_station"]) for r in rows]
     pillar_pcts = {
@@ -383,12 +394,13 @@ def main() -> None:
             (1, rank("primary_2km", True)),
             (1, rank("nearest_primary_m", False)),
         ]),
-        "value": rank("median_psf", False),
+        "value": rank_known("median_psf", False),
         "lease": rank("lease_left_years", True, 0),
     }
     for i, row in enumerate(rows):
         for key, pcts in pillar_pcts.items():
-            row[f"score_{key}"] = round(1 + 9 * pcts[i], 1)
+            # No resales in 3 years means no price to judge: Value is neutral.
+            row[f"score_{key}"] = NEUTRAL_SCORE if pcts[i] is None else round(1 + 9 * pcts[i], 1)
 
     columns = list(rows[0].keys())
     conn.execute("DROP TABLE IF EXISTS livability")

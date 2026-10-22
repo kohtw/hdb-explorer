@@ -24,7 +24,7 @@ def main() -> None:
     conn.close()
     webapp._cache.clear()
 
-    paths = ["/api/meta", "/api/overview", "/api/summary", "/api/map", "/api/towns", "/api/livability/meta"]
+    paths = ["/api/meta", "/api/overview", "/api/summary", "/api/map", "/api/towns", "/api/livability/meta", "/api/correlations"]
     paths += [f"/api/livability/towns?persona={p['key']}" for p in webapp.PERSONAS]
     for flat_type in flat_types:
         q = urllib.parse.quote(flat_type)

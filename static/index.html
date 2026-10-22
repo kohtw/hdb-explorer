@@ -106,6 +106,7 @@
       <button class="subtab" data-sub="explore">Transactions</button>
       <button class="subtab" data-sub="towns">Towns</button>
       <button class="subtab" data-sub="insights">Insights</button>
+      <button class="subtab" data-sub="correlations">Correlations</button>
     </nav>
 
     <!-- ===== Transactions ===== -->
@@ -237,6 +238,53 @@
           </div>
           <div class="table-wrap"><table id="table-value"></table></div>
         </div>
+      </div>
+    </div>
+
+    <!-- ===== Correlations ===== -->
+    <div class="subview" id="view-correlations">
+      <h2>Correlations</h2>
+      <p class="subtitle" id="corr-subtitle">How livability factors move together, and which ones go with higher prices.</p>
+      <div class="card" style="margin-bottom: 16px">
+        <div class="card-head">
+          <h3>What goes with a higher $ psf?</h3>
+          <span class="muted small">Spearman ρ with each block's median $ psf</span>
+        </div>
+        <div class="chart" style="height: 460px"><canvas id="chart-drivers"></canvas></div>
+        <p class="muted small" style="margin: 12px 0 0; line-height: 1.6">
+          <b>Across Singapore</b> compares every block, so it mixes in the big premium for central towns.
+          <b>Within the same town</b> compares blocks only against their own town, then averages across towns
+          (weighted by block count), which shows what matters once location is held roughly constant.
+          For distances and minutes, a negative ρ means <i>closer or quicker goes with pricier</i>.
+          The Value score is left out because it's computed from $ psf, and the CBD and Lease scores are shown via
+          their raw measures (commute minutes, lease years), which they mirror exactly.</p>
+      </div>
+      <div class="card" style="margin-bottom: 16px">
+        <div class="card-head">
+          <h3>Correlation matrix</h3>
+          <div class="segmented" id="corr-group">
+            <button data-value="score" class="active">Pillar scores</button>
+            <button data-value="raw">Raw measures</button>
+          </div>
+        </div>
+        <div class="table-wrap"><table class="corr-matrix" id="corr-matrix"></table></div>
+        <div class="legend corr-legend">
+          <span>−1</span><span class="bar corr-bar"></span><span>+1</span>
+          <span style="margin-left: auto">Click a cell to plot that pair below</span>
+        </div>
+      </div>
+      <div class="card" id="corr-scatter-card">
+        <div class="card-head" style="flex-wrap: wrap">
+          <h3>Scatter explorer</h3>
+          <div class="controls" style="display: flex; gap: 8px; flex-wrap: wrap">
+            <select class="inline" id="corr-x"></select>
+            <span class="muted small" style="align-self: center">vs</span>
+            <select class="inline" id="corr-y"></select>
+            <select class="inline" id="corr-town"><option value="">All towns</option></select>
+          </div>
+        </div>
+        <div class="chart" style="height: 440px"><canvas id="chart-scatter"></canvas></div>
+        <p class="muted small" id="corr-scatter-stats" style="margin: 10px 0 0"></p>
       </div>
     </div>
     </section>

@@ -138,7 +138,7 @@ const metricFmt = (metric) => (metric === "count" ? fmtNum : metric.includes("ps
 
 const state = { meta: null, loaded: {}, analyseSub: "explore" };
 const TABS = ["overview", "building", "analyse", "livability", "map"];
-const ANALYSE_SUBS = ["explore", "towns", "insights"];
+const ANALYSE_SUBS = ["explore", "towns", "insights", "correlations"];
 const LOADERS = {
   overview: loadOverview,
   building: () => {},
@@ -147,6 +147,7 @@ const LOADERS = {
   explore: initExplore,
   towns: loadTowns,
   insights: loadInsights,
+  correlations: loadCorrelations,
 };
 
 function go(hash) {
@@ -1497,6 +1498,156 @@ async function loadInsightsData() {
   $("#table-value").innerHTML = blockTable(d.best_value, true);
 }
 
+// ================= correlations =================
+
+const corr = { data: null, group: "score" };
+
+function corrColor(r) {
+  if (r == null) return "#f3efef";
+  const [R, G, B] = r >= 0 ? [200, 16, 46] : [47, 109, 181];
+  return `rgba(${R},${G},${B},${(0.06 + 0.88 * Math.min(1, Math.abs(r))).toFixed(2)})`;
+}
+
+const fmtRho = (r) => (r == null ? "–" : `${r < 0 ? "−" : ""}${Math.abs(r).toFixed(2)}`);
+const rhoStrength = (r) => {
+  const a = Math.abs(r ?? 0);
+  return a < 0.1 ? "negligible" : a < 0.3 ? "weak" : a < 0.5 ? "moderate" : "strong";
+};
+
+async function loadCorrelations() {
+  const d = (corr.data = await withLoading($("#view-correlations"), api("/api/correlations")));
+  if (!d.factors.length) {
+    $("#corr-subtitle").textContent = "Livability scores haven't been built yet. Run build_livability.py, then reload.";
+    return;
+  }
+  $("#corr-subtitle").textContent = `${fmtNum(d.blocks)} scored HDB blocks, ${fmtNum(d.priced_blocks)} with resales in the last 3 years. Correlation shows what moves together, not what causes what.`;
+
+  drawChart("chart-drivers", {
+    type: "bar",
+    data: {
+      labels: d.drivers.map((f) => f.label),
+      datasets: [
+        { label: "Within the same town", data: d.drivers.map((f) => f.within_town), backgroundColor: "#c8102e", borderRadius: 3 },
+        { label: "Across Singapore", data: d.drivers.map((f) => f.overall), backgroundColor: "#f4a3ab", borderRadius: 3 },
+      ],
+    },
+    options: {
+      indexAxis: "y",
+      interaction: { mode: "index", intersect: false, axis: "y" },
+      scales: { x: { suggestedMin: -0.6, suggestedMax: 0.6, title: { display: true, text: "Spearman ρ with $ psf" } } },
+      plugins: { tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ρ = ${fmtRho(c.parsed.x)}` } } },
+    },
+  });
+
+  bindSegmented("#corr-group", (g) => {
+    corr.group = g;
+    renderCorrMatrix();
+  });
+  renderCorrMatrix();
+
+  const options = d.factors.map((f) => `<option value="${esc(f.key)}">${esc(f.label)}</option>`).join("");
+  $("#corr-x").innerHTML = options;
+  $("#corr-y").innerHTML = options;
+  $("#corr-x").value = "cbd_min";
+  $("#corr-y").value = "median_psf";
+  fillSelect($("#corr-town"), state.meta.towns.filter((t) => t !== "LIM CHU KANG"));
+  ["#corr-x", "#corr-y", "#corr-town"].forEach((sel) => $(sel).addEventListener("change", loadScatter));
+  $("#corr-matrix").addEventListener("click", (e) => {
+    const cell = e.target.closest("[data-x]");
+    if (!cell || cell.dataset.x === cell.dataset.y) return;
+    $("#corr-x").value = cell.dataset.x;
+    $("#corr-y").value = cell.dataset.y;
+    loadScatter();
+    $("#corr-scatter-card").scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  loadScatter();
+}
+
+function renderCorrMatrix() {
+  const d = corr.data;
+  const factors = d.factors.filter((f) => f.group === corr.group || f.key === "median_psf");
+  const short = (f) => f.label.replace(/ score$/, "").replace(/ \((m|min|years|block median)\)$/, "");
+  $("#corr-matrix").innerHTML = `
+    <thead><tr><th></th>${factors.map((f) => `<th class="corr-col" title="${esc(f.label)}"><span>${esc(short(f))}</span></th>`).join("")}</tr></thead>
+    <tbody>${factors
+      .map(
+        (row) => `<tr><th class="corr-row">${esc(row.label)}</th>${factors
+          .map((col) => {
+            const r = d.matrix[row.key][col.key];
+            const strong = r != null && Math.abs(r) > 0.5;
+            return `<td class="corr-cell ${row.key === col.key ? "diag" : ""}" data-x="${esc(col.key)}" data-y="${esc(row.key)}"
+              title="${esc(row.label)} vs ${esc(col.label)}: ρ = ${fmtRho(r)}"
+              style="background:${row.key === col.key ? "#f6f2f2" : corrColor(r)};color:${strong ? "#fff" : "var(--ink)"}">${row.key === col.key ? "" : fmtRho(r)}</td>`;
+          })
+          .join("")}</tr>`
+      )
+      .join("")}</tbody>`;
+}
+
+async function loadScatter() {
+  const x = $("#corr-x").value;
+  const y = $("#corr-y").value;
+  const town = $("#corr-town").value;
+  const d = await withLoading($("#corr-scatter-card"), api("/api/correlations/scatter", { x, y, town }));
+  const label = (key) => corr.data.factors.find((f) => f.key === key).label;
+  const xs = d.points.map((p) => p[0]);
+  const lo = Math.min(...xs);
+  const hi = Math.max(...xs);
+  const datasets = [
+    {
+      type: "scatter",
+      label: town ? titleCase(town) : "All blocks",
+      data: d.points.map((p) => ({ x: p[0], y: p[1] })),
+      backgroundColor: "rgba(200,16,46,0.28)",
+      pointRadius: town ? 3 : 1.6,
+      pointHoverRadius: 5,
+    },
+  ];
+  if (d.slope != null) {
+    datasets.push({
+      type: "line",
+      label: "Linear trend",
+      data: [
+        { x: lo, y: d.intercept + d.slope * lo },
+        { x: hi, y: d.intercept + d.slope * hi },
+      ],
+      borderColor: "#1f1a1b",
+      borderWidth: 2,
+      borderDash: [6, 4],
+      pointRadius: 0,
+    });
+  }
+  drawChart("chart-scatter", {
+    data: { datasets },
+    options: {
+      animation: false,
+      interaction: { mode: "nearest", intersect: true },
+      scales: {
+        x: { type: "linear", title: { display: true, text: label(x) } },
+        y: { title: { display: true, text: label(y) } },
+      },
+      plugins: {
+        tooltip: {
+          filter: (item) => item.datasetIndex === 0,
+          callbacks: {
+            label: (c) => {
+              const p = d.points[c.dataIndex];
+              return `${blockLabel(p[2])} (${titleCase(p[3])}): ${p[0]}, ${p[1]}`;
+            },
+          },
+        },
+      },
+      onClick: (_e, items) => {
+        const item = items.find((i) => i.datasetIndex === 0);
+        if (item) openBlock(d.points[item.index][2]);
+      },
+    },
+  });
+  $("#corr-scatter-stats").textContent = d.rho == null
+    ? "Not enough blocks to compare."
+    : `ρ = ${fmtRho(d.rho)} (${rhoStrength(d.rho)}) across ${fmtNum(d.n)} blocks${town ? ` in ${titleCase(town)}` : ""}. Click a dot to open that block.`;
+}
+
 // ================= livability =================
 
 const liv = { meta: null, persona: "balanced", town: "", sort: "overall", minLease: "", maxPsf: "", rows: [], total: 0 };
@@ -1670,12 +1821,12 @@ async function loadLivBlocks(reset) {
             <td>${esc(blockLabel(r.unit_id))}<div class="muted small">${esc(titleCase(r.town))}</div></td>
             <td class="num">${scoreCell(r.overall, true)}</td><td class="num small">${fmtMin(r.cbd_min)}</td>
             ${pillars.map((p) => `<td class="num">${scoreCell(r[`score_${p.key}`])}</td>`).join("")}
-            <td class="num">${fmtPsf(r.median_psf)}${r.psf_source === "town" ? `<span class="muted" title="No recent resales; town median used">*</span>` : ""}</td>
+            <td class="num"${r.median_psf == null ? ` title="No resales in the last 3 years, so Value is 5.0"` : ""}>${fmtPsf(r.median_psf)}</td>
             <td class="num">${r.lease_left_years != null ? `${r.lease_left_years} yrs` : "–"}</td></tr>`
         )
         .join("") || `<tr><td colspan="${pillars.length + 6}" class="muted">No blocks match these filters</td></tr>`
     }</tbody>`;
-  $("#liv-count").textContent = `Showing ${fmtNum(liv.rows.length)} of ${fmtNum(liv.total)} blocks · * no recent resales, town median $ psf used`;
+  $("#liv-count").textContent = `Showing ${fmtNum(liv.rows.length)} of ${fmtNum(liv.total)} blocks · $ psf "–" means no resales in 3 years (Value set to 5.0)`;
   $("#liv-more").style.display = liv.rows.length < liv.total ? "" : "none";
 
   if (reset && !liv.town && liv.sort === "overall" && !liv.minLease && !liv.maxPsf && liv.rows[0]) {

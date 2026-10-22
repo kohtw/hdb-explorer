@@ -1071,7 +1071,7 @@ def api_block():
 PILLAR_KEYS = [p["key"] for p in PILLARS]
 PERSONA_BY_KEY = {p["key"]: p for p in PERSONAS}
 LIV_BLOCK_COLUMNS = (
-    "unit_id, block, street_name, town, median_psf, psf_source, lease_left_years, rail_min, cbd_min, "
+    "unit_id, block, street_name, town, median_psf, lease_left_years, rail_min, cbd_min, "
     + ", ".join(f"score_{k}" for k in PILLAR_KEYS)
 )
 
@@ -1167,6 +1167,153 @@ def api_livability_blocks():
         [*params, limit, offset],
     )
     return jsonify({"persona": persona, "total": total, "offset": offset, "rows": rows_to_dicts(rows)})
+
+
+# ---------- correlations ----------
+
+CORR_FACTORS = [
+    *({"key": f"score_{p['key']}", "label": f"{p['label']} score", "group": "score"} for p in PILLARS),
+    {"key": "median_psf", "label": "$ psf (block median)", "group": "raw"},
+    {"key": "rail_min", "label": "Minutes to rail", "group": "raw"},
+    {"key": "cbd_min", "label": "Commute to CBD (min)", "group": "raw"},
+    {"key": "lines_15min", "label": "Rail lines within 15 min", "group": "raw"},
+    {"key": "interchange_min", "label": "Minutes to interchange", "group": "raw"},
+    {"key": "bus_services_400m", "label": "Bus services within 400 m", "group": "raw"},
+    {"key": "nearest_hawker_m", "label": "Hawker centre distance (m)", "group": "raw"},
+    {"key": "gps_1km", "label": "GPs within 1 km", "group": "raw"},
+    {"key": "nearest_polyclinic_m", "label": "Polyclinic distance (m)", "group": "raw"},
+    {"key": "nearest_hospital_m", "label": "Hospital distance (m)", "group": "raw"},
+    {"key": "nearest_park_m", "label": "Park distance (m)", "group": "raw"},
+    {"key": "primary_1km", "label": "Primary schools within 1 km", "group": "raw"},
+    {"key": "lease_left_years", "label": "Lease left (years)", "group": "raw"},
+]
+CORR_KEYS = {f["key"] for f in CORR_FACTORS}
+PRICE_KEY = "median_psf"
+# Value is computed from $psf, so its correlation with price is circular. CBD and Lease scores are
+# rank transforms of a single raw measure, so they'd duplicate cbd_min / lease_left_years exactly.
+NOT_DRIVERS = {PRICE_KEY, "score_value", "score_cbd", "score_lease"}
+MIN_TOWN_BLOCKS = 30
+
+
+def average_ranks(values: list[float]) -> list[float]:
+    order = sorted(range(len(values)), key=values.__getitem__)
+    ranks = [0.0] * len(values)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and values[order[j + 1]] == values[order[i]]:
+            j += 1
+        for k in range(i, j + 1):
+            ranks[order[k]] = (i + j) / 2
+        i = j + 1
+    return ranks
+
+
+def pearson(a: list[float], b: list[float]) -> float | None:
+    n = len(a)
+    ma, mb = sum(a) / n, sum(b) / n
+    cov = sum((x - ma) * (y - mb) for x, y in zip(a, b))
+    va = sum((x - ma) ** 2 for x in a)
+    vb = sum((y - mb) ** 2 for y in b)
+    return cov / (va * vb) ** 0.5 if va and vb else None
+
+
+def spearman(xs: list, ys: list) -> tuple[float | None, int]:
+    pairs = [(x, y) for x, y in zip(xs, ys) if x is not None and y is not None]
+    if len(pairs) < 10:
+        return None, len(pairs)
+    a, b = zip(*pairs)
+    return pearson(average_ranks(list(a)), average_ranks(list(b))), len(pairs)
+
+
+def livability_columns(db, keys: list[str]) -> tuple[list[str], dict[str, list]]:
+    rows = db.execute(f"SELECT town, {', '.join(keys)} FROM livability").fetchall()
+    return [r["town"] for r in rows], {k: [r[k] for r in rows] for k in keys}
+
+
+@app.route("/api/correlations")
+def api_correlations():
+    db = get_db()
+    if not livability_available(db):
+        return jsonify({"factors": [], "matrix": {}, "drivers": []})
+
+    def compute():
+        keys = [f["key"] for f in CORR_FACTORS]
+        towns, cols = livability_columns(db, keys)
+        matrix = {k: {} for k in keys}
+        for i, a in enumerate(keys):
+            matrix[a][a] = 1.0
+            for b in keys[i + 1:]:
+                rho, _ = spearman(cols[a], cols[b])
+                matrix[a][b] = matrix[b][a] = rho
+
+        by_town = {}
+        for idx, town in enumerate(towns):
+            by_town.setdefault(town, []).append(idx)
+        drivers = []
+        for f in CORR_FACTORS:
+            if f["key"] in NOT_DRIVERS:
+                continue
+            overall, n = spearman(cols[f["key"]], cols[PRICE_KEY])
+            # Within-town correlation strips out the location premium of central towns.
+            weighted, total, towns_used = 0.0, 0, 0
+            for idxs in by_town.values():
+                rho, tn = spearman([cols[f["key"]][i] for i in idxs], [cols[PRICE_KEY][i] for i in idxs])
+                if rho is not None and tn >= MIN_TOWN_BLOCKS:
+                    weighted += rho * tn
+                    total += tn
+                    towns_used += 1
+            drivers.append(
+                {**f, "overall": overall, "within_town": weighted / total if total else None, "n": n, "towns_used": towns_used}
+            )
+        drivers.sort(key=lambda d: -abs(d["within_town"] or 0))
+        return {
+            "factors": CORR_FACTORS,
+            "matrix": matrix,
+            "drivers": drivers,
+            "blocks": len(towns),
+            "priced_blocks": sum(v is not None for v in cols[PRICE_KEY]),
+        }
+
+    return jsonify(cached("correlations", compute))
+
+
+@app.route("/api/correlations/scatter")
+def api_correlations_scatter():
+    db = get_db()
+    x, y = request.args.get("x"), request.args.get("y")
+    if x not in CORR_KEYS or y not in CORR_KEYS:
+        abort(400, "unknown factor")
+    town = request.args.get("town") or ""
+    clauses, params = [f"{x} IS NOT NULL", f"{y} IS NOT NULL"], []
+    if town:
+        clauses.append("town = ?")
+        params.append(town)
+    rows = db.execute(
+        f"SELECT unit_id, town, {x} AS x, {y} AS y FROM livability WHERE {' AND '.join(clauses)}", params
+    ).fetchall()
+    xs = [r["x"] for r in rows]
+    ys = [r["y"] for r in rows]
+    rho, n = spearman(xs, ys)
+    slope = intercept = None
+    if n >= 10:
+        mx, my = sum(xs) / n, sum(ys) / n
+        vx = sum((v - mx) ** 2 for v in xs)
+        if vx:
+            slope = sum((a - mx) * (b - my) for a, b in zip(xs, ys)) / vx
+            intercept = my - slope * mx
+    return jsonify(
+        {
+            "x": x,
+            "y": y,
+            "town": town,
+            "n": n,
+            "rho": rho,
+            "slope": slope,
+            "intercept": intercept,
+            "points": [[r["x"], r["y"], r["unit_id"], r["town"]] for r in rows],
+        }
+    )
 
 
 def block_livability(db, unit_id: str) -> dict | None:

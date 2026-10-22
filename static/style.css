@@ -1144,6 +1144,72 @@ table.weights th {
   white-space: nowrap;
 }
 
+/* ---------- correlations ---------- */
+
+.corr-matrix {
+  width: auto;
+  border-collapse: separate;
+  border-spacing: 3px;
+}
+
+.corr-matrix th {
+  background: transparent;
+  border: 0;
+  position: static;
+}
+
+.corr-col {
+  height: 120px;
+  vertical-align: bottom;
+  padding: 4px 0;
+}
+
+.corr-col span {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  white-space: nowrap;
+  font-size: 0.72rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.corr-row {
+  text-align: right;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ink);
+  white-space: nowrap;
+  padding-right: 8px;
+}
+
+.corr-cell {
+  width: 46px;
+  min-width: 46px;
+  height: 34px;
+  text-align: center;
+  font-size: 0.74rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  border: 0;
+  border-radius: 5px;
+  padding: 0;
+  cursor: pointer;
+}
+
+.corr-cell.diag {
+  cursor: default;
+}
+
+.corr-cell:not(.diag):hover {
+  outline: 2px solid var(--ink);
+}
+
+.corr-bar {
+  background: linear-gradient(90deg, rgb(47, 109, 181), #f6f2f2, rgb(200, 16, 46)) !important;
+}
+
 /* ---------- map ---------- */
 
 #map {
