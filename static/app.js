@@ -1927,7 +1927,7 @@ function renderBlockLivability(d) {
 
 // ================= map =================
 
-const mapState = { map: null, markers: [], points: [], metric: "median_psf", legend: null, data: null };
+const mapState = { map: null, markers: [], points: [], metric: "median_psf", legend: null, data: null, cluster: null, binFor: null };
 const MAP_BINS = ["#ffd0d6", "#f8a1ac", "#f26b7a", "#c8102e", "#6e0618"];
 const MAP_NO_DATA = "#bdb3b5";
 const MAP_METRICS = {
@@ -1942,13 +1942,33 @@ function mapBins(metric) {
   return { cuts, edges: [values[0], ...cuts, values[values.length - 1]], binFor: (v) => (v == null ? -1 : cuts.filter((c) => v > c).length) };
 }
 
+// Group bubble: coloured by the median of its blocks' values on the same scale as single dots.
+function clusterIcon(cluster) {
+  const children = cluster.getAllChildMarkers();
+  const values = children.map((m) => m.mapValue).filter((v) => v != null).sort((a, b) => a - b);
+  const median = values.length ? values[Math.floor(values.length / 2)] : null;
+  const bin = mapState.binFor ? mapState.binFor(median) : -1;
+  const size = Math.round(36 + Math.min(28, Math.log2(children.length) * 3));
+  const light = bin < 2;
+  return L.divIcon({
+    className: "cluster-icon",
+    iconSize: L.point(size, size),
+    html: `<div class="cluster-bubble" style="width:${size}px;height:${size}px;background:${bin < 0 ? MAP_NO_DATA : MAP_BINS[bin]};color:${light ? "#5a0614" : "#fff"}">
+      <b>${median != null ? fmtPsf(median) : "–"}</b><span>${fmtNum(children.length)}</span></div>`,
+  });
+}
+
 function colourMap() {
   const metric = mapState.metric;
   const { edges, binFor } = mapBins(metric);
+  mapState.binFor = binFor;
   mapState.markers.forEach((marker, i) => {
-    const bin = binFor(mapState.points[i][metric]);
+    marker.mapValue = mapState.points[i][metric];
+    const bin = binFor(marker.mapValue);
     marker.setStyle({ fillColor: bin < 0 ? MAP_NO_DATA : MAP_BINS[bin] });
   });
+  // refreshClusters throws until the group has been added to the map.
+  if (mapState.cluster && mapState.map.hasLayer(mapState.cluster)) mapState.cluster.refreshClusters();
   if (mapState.legend) mapState.legend.remove();
   mapState.legend = L.control({ position: "bottomright" });
   mapState.legend.onAdd = () => {
@@ -2032,8 +2052,17 @@ async function loadMap() {
       () => mapPopup(p, data.reference_years)
     )
   );
-  L.layerGroup(mapState.markers).addTo(map);
+  mapState.cluster = L.markerClusterGroup({
+    chunkedLoading: true,
+    showCoverageOnHover: false,
+    maxClusterRadius: 55,
+    disableClusteringAtZoom: 16,
+    spiderfyOnMaxZoom: false,
+    iconCreateFunction: clusterIcon,
+  });
   colourMap();
+  mapState.cluster.addLayers(mapState.markers);
+  map.addLayer(mapState.cluster);
 
   if (hasAdjusted) {
     const toggle = L.control({ position: "topright" });

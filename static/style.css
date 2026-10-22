@@ -1324,6 +1324,37 @@ table.weights th {
   }
 }
 
+.cluster-icon {
+  background: transparent;
+  border: 0;
+}
+
+.cluster-bubble {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 3px solid #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  line-height: 1.05;
+  transition: transform 0.15s;
+}
+
+.cluster-bubble:hover {
+  transform: scale(1.08);
+}
+
+.cluster-bubble b {
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.cluster-bubble span {
+  font-size: 0.62rem;
+  opacity: 0.85;
+}
+
 .map-toggle {
   box-shadow: var(--shadow);
 }
