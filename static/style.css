@@ -249,12 +249,13 @@ h3 {
 .kpi::after {
   content: "";
   position: absolute;
-  right: -20px;
-  top: -20px;
-  width: 70px;
-  height: 70px;
-  border-radius: 50%;
-  background: var(--red-soft);
+  right: -4px;
+  top: -6px;
+  width: 58px;
+  height: 58px;
+  transform: rotate(20deg);
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cg fill='%23fde8ea'%3E%3Cellipse cx='32' cy='42' rx='14' ry='12'/%3E%3Cellipse cx='13' cy='26' rx='6' ry='8'/%3E%3Cellipse cx='25' cy='15' rx='6' ry='8'/%3E%3Cellipse cx='39' cy='15' rx='6' ry='8'/%3E%3Cellipse cx='51' cy='26' rx='6' ry='8'/%3E%3C/g%3E%3C/svg%3E")
+    center / contain no-repeat;
 }
 
 .kpi.hero {
@@ -264,7 +265,7 @@ h3 {
 }
 
 .kpi.hero::after {
-  background: rgba(255, 255, 255, 0.12);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cg fill='%23ffffff' fill-opacity='.2'%3E%3Cellipse cx='32' cy='42' rx='14' ry='12'/%3E%3Cellipse cx='13' cy='26' rx='6' ry='8'/%3E%3Cellipse cx='25' cy='15' rx='6' ry='8'/%3E%3Cellipse cx='39' cy='15' rx='6' ry='8'/%3E%3Cellipse cx='51' cy='26' rx='6' ry='8'/%3E%3C/g%3E%3C/svg%3E");
 }
 
 .kpi .label {
@@ -896,14 +897,90 @@ th.num {
   min-height: 60px;
 }
 
-.loading::after {
+.loading::before {
   content: "";
   position: absolute;
   inset: 0;
-  background: rgba(255, 255, 255, 0.6)
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 50 50'%3E%3Ccircle cx='25' cy='25' r='20' fill='none' stroke='%23c8102e' stroke-width='5' stroke-dasharray='90 60'%3E%3CanimateTransform attributeName='transform' type='rotate' from='0 25 25' to='360 25 25' dur='0.8s' repeatCount='indefinite'/%3E%3C/circle%3E%3C/svg%3E")
-    center / 32px no-repeat;
+  background: rgba(255, 255, 255, 0.65);
   border-radius: inherit;
+  z-index: 5;
+}
+
+.loading::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+  background: url("/static/otter.svg") center / contain no-repeat;
+  filter: drop-shadow(0 3px 6px rgba(139, 10, 31, 0.25));
+  animation: swim 0.8s ease-in-out infinite alternate;
+  z-index: 6;
+}
+
+@keyframes swim {
+  from {
+    transform: translateY(-5px) rotate(-10deg);
+  }
+  to {
+    transform: translateY(5px) rotate(10deg);
+  }
+}
+
+/* ---------- otters ---------- */
+
+.brand-otter {
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
+  transition: transform 0.2s;
+}
+
+.brand:hover .brand-otter {
+  transform: rotate(-12deg) scale(1.08);
+}
+
+.otter-bob {
+  transform-box: fill-box;
+  transform-origin: center bottom;
+  animation: otter-bob 2.6s ease-in-out infinite;
+}
+
+.otter-bob.delay {
+  animation-delay: -1.3s;
+}
+
+@keyframes otter-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0);
+  }
+  30% {
+    transform: translateY(-2px) rotate(-4deg);
+  }
+  60% {
+    transform: translateY(0) rotate(3deg);
+  }
+}
+
+.otter-float {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: otter-float 3.4s ease-in-out infinite;
+}
+
+@keyframes otter-float {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-2deg);
+  }
+  50% {
+    transform: translateY(1.5px) rotate(2deg);
+  }
+}
+
+.otter-marker img {
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.35));
 }
 
 .error-box {

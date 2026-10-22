@@ -41,6 +41,52 @@ const debounce = (fn, ms) => {
   };
 };
 
+// ================= otters =================
+
+const OTTER = { fur: "#7a5236", dark: "#5e3b25", belly: "#ecd3b2", ink: "#1f1a1b" };
+const OTTER_ICON = `<img src="/static/otter.svg" width="28" height="28" alt="" style="vertical-align:middle;margin-right:8px">`;
+
+// Origin is between the otter's feet; it stands ~32 units tall at scale 1.
+function standingOtter(x, y, scale = 1, cls = "otter-bob") {
+  return `<g transform="translate(${x},${y}) scale(${scale})"><g class="${cls}">
+    <path d="M5 -2 Q15 0 19 -7" stroke="${OTTER.fur}" stroke-width="4" fill="none" stroke-linecap="round"/>
+    <ellipse cx="0" cy="-12" rx="7" ry="11" fill="${OTTER.fur}"/>
+    <ellipse cx="0" cy="-10" rx="4.6" ry="8" fill="${OTTER.belly}"/>
+    <ellipse cx="-3.2" cy="-0.8" rx="2.8" ry="1.3" fill="${OTTER.dark}"/>
+    <ellipse cx="3.2" cy="-0.8" rx="2.8" ry="1.3" fill="${OTTER.dark}"/>
+    <circle cx="-1.7" cy="-15.5" r="1.7" fill="${OTTER.dark}"/>
+    <circle cx="1.7" cy="-15.5" r="1.7" fill="${OTTER.dark}"/>
+    <circle cx="-5.6" cy="-27.6" r="1.4" fill="${OTTER.fur}"/>
+    <circle cx="5.6" cy="-27.6" r="1.4" fill="${OTTER.fur}"/>
+    <ellipse cx="0" cy="-24.6" rx="7" ry="6" fill="${OTTER.fur}"/>
+    <ellipse cx="0" cy="-22.4" rx="4.6" ry="3" fill="${OTTER.belly}"/>
+    <ellipse cx="0" cy="-23.9" rx="1.4" ry="1" fill="${OTTER.ink}"/>
+    <circle cx="-2.6" cy="-26.6" r="1" fill="${OTTER.ink}"/>
+    <circle cx="2.6" cy="-26.6" r="1" fill="${OTTER.ink}"/>
+    <path d="M-3.5 -22.5 l-5 -1 M-3.5 -21.6 l-5 0.4 M3.5 -22.5 l5 -1 M3.5 -21.6 l5 0.4" stroke="${OTTER.dark}" stroke-width="0.45"/>
+  </g></g>`;
+}
+
+// Otter floating on its back holding a pebble; origin is at the water line.
+function floatingOtter(x, y, scale = 1) {
+  return `<g transform="translate(${x},${y}) scale(${scale})"><g class="otter-float">
+    <path d="M14 -1 Q21 1 26 -3" stroke="${OTTER.fur}" stroke-width="3" fill="none" stroke-linecap="round"/>
+    <ellipse cx="0" cy="-2" rx="15" ry="5.5" fill="${OTTER.fur}"/>
+    <ellipse cx="1" cy="-4.2" rx="11" ry="3.2" fill="${OTTER.belly}"/>
+    <ellipse cx="12.5" cy="-7.5" rx="1.5" ry="2.6" transform="rotate(-20 12.5 -7.5)" fill="${OTTER.dark}"/>
+    <ellipse cx="15.5" cy="-6.5" rx="1.5" ry="2.6" transform="rotate(-35 15.5 -6.5)" fill="${OTTER.dark}"/>
+    <ellipse cx="-2.5" cy="-9" rx="2.4" ry="1.7" fill="#b9b0a8"/>
+    <circle cx="-4.2" cy="-7.4" r="1.5" fill="${OTTER.dark}"/>
+    <circle cx="-0.8" cy="-7.4" r="1.5" fill="${OTTER.dark}"/>
+    <circle cx="-19.5" cy="-6.5" r="1.7" fill="${OTTER.fur}"/>
+    <circle cx="-15" cy="-5" r="5.6" fill="${OTTER.fur}"/>
+    <ellipse cx="-15.8" cy="-8.4" rx="3.1" ry="2.1" fill="${OTTER.belly}"/>
+    <ellipse cx="-16.4" cy="-9.8" rx="1.1" ry="0.8" fill="${OTTER.ink}"/>
+    <circle cx="-12.4" cy="-7" r="0.85" fill="${OTTER.ink}"/>
+    <path d="M-24 1 q4 -2 8 0 M18 2 q4 -2 8 0" stroke="#fff" stroke-width="1" fill="none" opacity=".8"/>
+  </g></g>`;
+}
+
 async function api(path, params = {}) {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
@@ -351,7 +397,7 @@ function initBuildingSearch() {
 function showBuildingError(message, candidates = []) {
   const box = $("#building-error");
   box.innerHTML = message
-    ? `<div class="error-box">${esc(message)}${
+    ? `<div class="error-box">${OTTER_ICON}${esc(message)}${
         candidates.length
           ? `<div class="chips" style="margin-top:10px">${candidates
               .map((u) => `<button class="chip" data-unit="${esc(u)}">${esc(blockLabel(u))}</button>`)
@@ -837,14 +883,15 @@ function drawBuildingSvg() {
       <rect x="-3" y="-26" width="6" height="26" rx="2" fill="#9b6b4f"/>
       <circle cx="0" cy="-38" r="17" fill="#5fb37c"/><circle cx="-11" cy="-30" r="11" fill="#4ea36c"/><circle cx="11" cy="-31" r="12" fill="#6cc08a"/>
     </g>`;
-  const cat = `
-    <g transform="translate(${bx + bw / 2 + 34},${groundY - 1})">
-      <ellipse cx="0" cy="-6" rx="8" ry="6" fill="#1f1a1b"/>
-      <circle cx="7" cy="-13" r="5" fill="#1f1a1b"/>
-      <path d="M3.5 -16 L4.5 -22 L7.5 -17 Z M8 -17 L10.5 -22 L11.5 -15.5 Z" fill="#1f1a1b"/>
-      <circle cx="8.8" cy="-13.5" r="0.9" fill="#ffe9a8"/>
-      <path d="M-8 -5 Q-16 -8 -13 -16" stroke="#1f1a1b" stroke-width="2.4" fill="none" stroke-linecap="round"/>
-    </g>`;
+  const otters =
+    standingOtter(bx + bw / 2 + 32, groundY - 1, 1.3) + standingOtter(bx + bw / 2 + 58, groundY - 1, 0.8, "otter-bob delay");
+  const canalH = 14;
+  const canalY = H - canalH;
+  const canal = `
+    <rect x="0" y="${canalY}" width="${W}" height="${canalH}" fill="#cfeaf5"/>
+    <rect x="0" y="${canalY}" width="${W}" height="2" fill="#b3dcec"/>
+    <path d="M20 ${canalY + 8} q6 -3 12 0 M150 ${canalY + 9} q6 -3 12 0 M300 ${canalY + 7} q6 -3 12 0" stroke="#fff" stroke-width="1.2" fill="none"/>
+    ${floatingOtter(W - 96, canalY + 9, 1.25)}`;
 
   $("#bld-svg").innerHTML = `
   <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Building with price by storey band${split ? " and unit type" : ""}">
@@ -855,7 +902,8 @@ function drawBuildingSvg() {
 
     <rect x="0" y="${groundY}" width="${W}" height="${groundH}" fill="#e7f4ea"/>
     <rect x="0" y="${groundY}" width="${W}" height="4" fill="#cfe9d6"/>
-    ${split ? "" : `<path d="M${bx + bw / 2 - 16} ${groundY} L${bx + bw / 2 - 40} ${H} L${bx + bw / 2 + 40} ${H} L${bx + bw / 2 + 16} ${groundY} Z" fill="#f4ecec"/>`}
+    ${split ? "" : `<path d="M${bx + bw / 2 - 16} ${groundY} L${bx + bw / 2 - 40} ${canalY} L${bx + bw / 2 + 40} ${canalY} L${bx + bw / 2 + 16} ${groundY} Z" fill="#f4ecec"/>`}
+    ${canal}
 
     <rect x="${bx + bw / 2 - 30}" y="${roofY - 18}" width="60" height="18" rx="3" fill="#efe3e4"/>
     <rect x="${bx + bw / 2 - 22}" y="${roofY - 26}" width="44" height="10" rx="2" fill="#e3d4d6"/>
@@ -874,7 +922,7 @@ function drawBuildingSvg() {
     <rect x="${bx}" y="${groundY - voidH}" width="${bw}" height="2" fill="rgba(0,0,0,0.08)"/>
 
     ${tree(bx - 48, 1)}${tree(bx - 92, 0.75)}${tree(bx + bw + 40, 0.9)}${tree(bx + bw + 84, 0.7)}
-    ${cat}
+    ${otters}
     ${columnLabels}
     ${floorNums}
     ${labels}
@@ -1434,6 +1482,13 @@ async function loadMap() {
   };
   if (psfs.length) legend.addTo(map);
 
+  L.marker([1.3624, 103.8433], {
+    icon: L.divIcon({ className: "otter-marker", html: `<img src="/static/otter.svg" width="34" height="34" alt="">`, iconSize: [34, 34], iconAnchor: [17, 17] }),
+    zIndexOffset: 1000,
+  })
+    .bindPopup("<b>The Bishan otter family</b><br>Singapore's most famous residents.<br>Resale price paid: $0.")
+    .addTo(map);
+
   $("#map").addEventListener("click", (e) => {
     const link = e.target.closest(".popup-open");
     if (link) openBlock(link.dataset.unit);
@@ -1448,6 +1503,7 @@ async function boot() {
   initBuildingSearch();
   state.meta = await api("/api/meta");
   renderBuildingExamples();
+  $("#empty-otter").innerHTML = standingOtter(122, 117, 2.4, "");
   window.addEventListener("hashchange", route);
   route();
 }
