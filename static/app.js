@@ -808,35 +808,21 @@ function mrtEntranceSvg(st) {
     }`;
 }
 
-// Strip under the building scene: one small entrance per station within 15 min, each with a caption.
-function mrtStripSvg(stations) {
-  const slot = Math.min(140, (SCENE_W - 20) / stations.length);
-  const scale = Math.min(0.6, (slot - 18) / STATION_ICON_W);
-  const iconW = STATION_ICON_W * scale;
-  const groundY = 26 + 92 * scale + 4;
-  const H = groundY + 38;
-  const startX = (SCENE_W - stations.length * slot) / 2;
+// Slim column beside the building: one small entrance per station within 15 min, captioned in HTML.
+function mrtColumnHtml(stations) {
   const items = stations
     .map((st, i) => {
-      const cx = startX + i * slot + slot / 2;
       const name = stationName(st.station);
       const how = st.how === "walk" ? `walk${st.exit ? ` · ${st.exit}` : ""}` : st.how.replace("bus", "by bus");
       const detail = `${fmtMin(st.min)} ${how}`;
-      const nameSize = Math.min(12, (slot - 6) / Math.max(1, name.length * 0.58));
-      return `<g>
-        <title>${esc(name)} · ${esc(detail)}${st.walk_m ? ` · ${st.walk_m} m` : ""}</title>
-        <g transform="translate(${cx - iconW / 2},${groundY}) scale(${scale.toFixed(3)})">${mrtEntranceSvg(st)}</g>
-        <text x="${cx}" y="${groundY + 17}" font-size="${nameSize.toFixed(1)}" font-weight="800" fill="${i === 0 ? "#8b0a1f" : "#1f1a1b"}" text-anchor="middle">${esc(name)}</text>
-        <text x="${cx}" y="${groundY + 31}" font-size="10" font-weight="600" fill="#6f6466" text-anchor="middle">${esc(detail)}</text>
-      </g>`;
+      return `<div class="mrt-item" title="${esc(name)} · ${esc(detail)}${st.walk_m ? ` · ${st.walk_m} m` : ""}">
+        <svg viewBox="-10 -96 ${STATION_ICON_W + 20} 100" aria-hidden="true">${mrtEntranceSvg(st)}</svg>
+        <div class="mrt-name ${i === 0 ? "first" : ""}">${esc(name)}</div>
+        <div class="mrt-detail">${esc(detail)}</div>
+      </div>`;
     })
     .join("");
-  return `<svg class="mrt-strip" viewBox="0 0 ${SCENE_W} ${H.toFixed(0)}" role="img" aria-label="MRT and LRT stations within 15 minutes">
-    <rect x="0" y="${groundY}" width="${SCENE_W}" height="${H - groundY}" fill="#e7f4ea"/>
-    <rect x="0" y="${groundY}" width="${SCENE_W}" height="3" fill="#cfe9d6"/>
-    <text x="14" y="18" font-size="11" font-weight="800" fill="#8b0a1f" letter-spacing="0.5">MRT / LRT WITHIN 15 MIN</text>
-    ${items}
-  </svg>`;
+  return `<div class="mrt-col"><div class="mrt-col-title">MRT ≤ 15 min</div>${items}</div>`;
 }
 
 // Spread the block's unit mix across one floor's worth of columns (largest-remainder rounding).
@@ -1073,7 +1059,7 @@ function drawBuildingSvg() {
     <path d="M20 ${canalY + 8} q6 -3 12 0 M150 ${canalY + 9} q6 -3 12 0 M300 ${canalY + 7} q6 -3 12 0" stroke="#fff" stroke-width="1.2" fill="none"/>
     ${floatingOtter(W - 96, canalY + 9, 1.25)}`;
 
-  $("#bld-svg").innerHTML = `
+  $("#bld-svg").innerHTML = `<div class="scene-row"><div class="scene-main">
   <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Building with price by storey band${split ? " and unit type" : ""}">
     <circle cx="${W - 70}" cy="54" r="26" fill="#ffd0d6"/><circle cx="${W - 70}" cy="54" r="17" fill="#ffb3bc"/>
     <g class="cloud"><ellipse cx="80" cy="46" rx="34" ry="11" fill="#fff"/><ellipse cx="100" cy="38" rx="20" ry="12" fill="#fff"/></g>
@@ -1107,7 +1093,7 @@ function drawBuildingSvg() {
     ${floorNums}
     ${labels}
     ${bands.length ? "" : `<text x="${bx + bw / 2}" y="${floorTop(Math.ceil(floors / 2))}" text-anchor="middle" font-size="13" font-weight="700" fill="#8b0a1f">No resales in this period</text>`}
-  </svg>${stations.length ? mrtStripSvg(stations) : ""}`;
+  </svg></div>${stations.length ? mrtColumnHtml(stations) : ""}</div>`;
   building.noAnim = false;
 
   const fmt = building.metric === "psf" ? (v) => `${fmtPsf(v)} psf` : fmtMoney;

@@ -897,6 +897,82 @@ th.num {
   }
 }
 
+.scene-row {
+  display: flex;
+  align-items: flex-end;
+}
+
+.scene-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.mrt-col {
+  flex: none;
+  width: 92px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 10px 52px 0;
+}
+
+.mrt-col-title {
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--red-dark);
+}
+
+.mrt-item {
+  text-align: center;
+  line-height: 1.2;
+}
+
+.mrt-item svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.mrt-name {
+  font-size: 0.7rem;
+  font-weight: 800;
+  margin-top: 2px;
+}
+
+.mrt-name.first {
+  color: var(--red-dark);
+}
+
+.mrt-detail {
+  font-size: 0.62rem;
+  color: var(--muted);
+}
+
+/* On phones a tall column would squash the building, so the stations sit in a row beneath it. */
+@media (max-width: 600px) {
+  .scene-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .mrt-col {
+    width: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    padding: 8px 12px 12px;
+  }
+  .mrt-col-title {
+    flex-basis: 100%;
+  }
+  .mrt-item {
+    flex: 1 1 0;
+    min-width: 64px;
+    max-width: 110px;
+  }
+}
+
 .tooltip {
   position: fixed;
   pointer-events: none;
