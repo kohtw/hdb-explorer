@@ -28,6 +28,7 @@
       <button class="tab" data-tab="overview">Overview</button>
       <button class="tab" data-tab="building">Building</button>
       <button class="tab" data-tab="analyse">Analyse</button>
+      <button class="tab" data-tab="livability">Livability</button>
       <button class="tab" data-tab="map">Map</button>
     </nav>
   </header>
@@ -238,6 +239,51 @@
         </div>
       </div>
     </div>
+    </section>
+
+    <!-- ================= LIVABILITY ================= -->
+    <section class="view" id="view-livability">
+      <h2>Livability</h2>
+      <p class="subtitle" id="liv-subtitle">Every HDB block scored 1–10 on what's nearby and what you get for the price.</p>
+      <div class="liv-personas" id="liv-personas"></div>
+      <div class="kpis" id="liv-kpis"></div>
+      <div class="grid cols-2" style="margin-bottom: 16px">
+        <div class="card flush">
+          <div class="card-head" style="padding: 18px 18px 0"><h3>Town rankings</h3>
+            <span class="muted small">Median block score · click a town to filter</span></div>
+          <div class="table-wrap" style="max-height: 560px; overflow-y: auto"><table id="liv-towns"></table></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>How scores work</h3></div>
+          <div id="liv-method"></div>
+        </div>
+      </div>
+      <div class="card flush">
+        <div class="pager">
+          <h3 style="margin: 0">Top blocks</h3>
+          <div class="controls" style="flex-wrap: wrap">
+            <select class="inline" id="liv-town"><option value="">All towns</option></select>
+            <select class="inline" id="liv-sort"><option value="overall">Sort: overall</option></select>
+            <select class="inline" id="liv-lease">
+              <option value="">Any lease</option>
+              <option value="60">60+ yrs left</option>
+              <option value="70">70+ yrs left</option>
+              <option value="80">80+ yrs left</option>
+            </select>
+            <select class="inline" id="liv-psf">
+              <option value="">Any $ psf</option>
+              <option value="500">Under $500 psf</option>
+              <option value="600">Under $600 psf</option>
+              <option value="700">Under $700 psf</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap"><table id="liv-blocks"></table></div>
+        <div class="pager">
+          <span class="muted small" id="liv-count"></span>
+          <button class="btn ghost" id="liv-more">Show more</button>
+        </div>
+      </div>
     </section>
 
     <!-- ================= MAP ================= -->

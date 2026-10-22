@@ -20,6 +20,7 @@ import urllib.request
 
 from flask import Flask, Response, abort, g, jsonify, request, send_from_directory
 
+from build_livability import PERSONAS, PILLARS
 from build_webapp_db import GEOCODE_CACHE_FILE, Median, sync_geocode
 
 ROOT = pathlib.Path(__file__).parent
@@ -1060,8 +1061,133 @@ def api_block():
             "layout": layout,
             "layout_source": layout_source,
             "nearby": nearby,
+            "livability": block_livability(db, unit_id),
         }
     )
+
+
+# ---------- livability ----------
+
+PILLAR_KEYS = [p["key"] for p in PILLARS]
+PERSONA_BY_KEY = {p["key"]: p for p in PERSONAS}
+LIV_BLOCK_COLUMNS = (
+    "unit_id, block, street_name, town, median_psf, psf_source, lease_left_years, "
+    + ", ".join(f"score_{k}" for k in PILLAR_KEYS)
+)
+
+
+def overall_expr(persona_key: str) -> str:
+    """SQL for a persona's weighted mean pillar score (keys/weights come from constants, not input)."""
+    weights = PERSONA_BY_KEY.get(persona_key, PERSONAS[0])["weights"]
+    terms = " + ".join(f"{w} * score_{k}" for k, w in weights.items() if w)
+    return f"ROUND(({terms}) / {sum(weights.values())}, 1)"
+
+
+def livability_available(db) -> bool:
+    return db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'livability'").fetchone() is not None
+
+
+@app.route("/api/livability/meta")
+def api_livability_meta():
+    db = get_db()
+
+    def compute():
+        scored = db.execute("SELECT COUNT(*) FROM livability").fetchone()[0] if livability_available(db) else 0
+        residential = db.execute("SELECT COUNT(*) FROM property_info WHERE residential = 'Y'").fetchone()[0]
+        return {"pillars": PILLARS, "personas": PERSONAS, "scored_blocks": scored, "residential_blocks": residential}
+
+    return jsonify(cached("liv_meta", compute))
+
+
+@app.route("/api/livability/towns")
+def api_livability_towns():
+    db = get_db()
+    persona = request.args.get("persona") if request.args.get("persona") in PERSONA_BY_KEY else "balanced"
+    if not livability_available(db):
+        return jsonify({"towns": []})
+
+    def compute():
+        pillar_medians = ", ".join(f"median(score_{k}) AS score_{k}" for k in PILLAR_KEYS)
+        rows = db.execute(
+            f"""
+            SELECT town, COUNT(*) AS blocks, median({overall_expr(persona)}) AS overall, {pillar_medians}
+            FROM livability GROUP BY town ORDER BY overall DESC
+            """
+        )
+        return {"persona": persona, "towns": rows_to_dicts(rows)}
+
+    return jsonify(cached(f"liv_towns:{persona}", compute))
+
+
+@app.route("/api/livability/blocks")
+def api_livability_blocks():
+    db = get_db()
+    persona = request.args.get("persona") if request.args.get("persona") in PERSONA_BY_KEY else "balanced"
+    if not livability_available(db):
+        return jsonify({"total": 0, "rows": []})
+    sort = request.args.get("sort", "overall")
+    order_col = f"score_{sort}" if sort in PILLAR_KEYS else "overall"
+    direction = "ASC" if request.args.get("dir") == "asc" else "DESC"
+    try:
+        limit = min(max(int(request.args.get("limit", 50)), 1), 200)
+        offset = max(int(request.args.get("offset", 0)), 0)
+    except ValueError:
+        abort(400, "invalid limit/offset")
+
+    clauses, params = [], []
+    town = request.args.get("town")
+    if town:
+        clauses.append("town = ?")
+        params.append(town)
+    min_lease = request.args.get("min_lease")
+    if min_lease:
+        try:
+            params.append(float(min_lease))
+        except ValueError:
+            abort(400, "invalid min_lease")
+        clauses.append("lease_left_years >= ?")
+    max_psf = request.args.get("max_psf")
+    if max_psf:
+        try:
+            params.append(float(max_psf))
+        except ValueError:
+            abort(400, "invalid max_psf")
+        clauses.append("median_psf <= ?")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    total = db.execute(f"SELECT COUNT(*) FROM livability {where}", params).fetchone()[0]
+    rows = db.execute(
+        f"""
+        SELECT {LIV_BLOCK_COLUMNS}, {overall_expr(persona)} AS overall
+        FROM livability {where}
+        ORDER BY {order_col} {direction}, overall DESC, unit_id
+        LIMIT ? OFFSET ?
+        """,
+        [*params, limit, offset],
+    )
+    return jsonify({"persona": persona, "total": total, "offset": offset, "rows": rows_to_dicts(rows)})
+
+
+def block_livability(db, unit_id: str) -> dict | None:
+    if not livability_available(db):
+        return None
+    row = db.execute("SELECT * FROM livability WHERE unit_id = ?", (unit_id,)).fetchone()
+    if row is None:
+        return None
+    overall = {
+        p["key"]: db.execute(f"SELECT {overall_expr(p['key'])} FROM livability WHERE unit_id = ?", (unit_id,)).fetchone()[0]
+        for p in PERSONAS
+    }
+    town_scores = dict(
+        db.execute(
+            f"SELECT {', '.join(f'median(score_{k}) AS {k}' for k in PILLAR_KEYS)} FROM livability WHERE town = ?",
+            (row["town"],),
+        ).fetchone()
+    )
+    better_than = db.execute(
+        f"SELECT AVG({overall_expr('balanced')} < ?) FROM livability", (overall["balanced"],)
+    ).fetchone()[0]
+    return {**dict(row), "overall": overall, "town_scores": town_scores, "better_than": better_than}
 
 
 @app.errorhandler(400)

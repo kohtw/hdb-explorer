@@ -11,6 +11,8 @@ python combine_hdb_resale_data.py
 python clean_hdb_data.py
 python download_hdb_property_info.py
 python build_webapp_db.py
+python download_amenities.py
+python build_livability.py
 python precompute.py
 
 # Only hdb.db, the property list and the geocode cache are needed at runtime.

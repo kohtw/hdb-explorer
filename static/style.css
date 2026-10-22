@@ -1001,6 +1001,126 @@ th.num {
   margin-right: 4px;
 }
 
+/* ---------- livability ---------- */
+
+.liv-personas {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.persona {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+}
+
+.persona span {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.persona:hover {
+  border-color: var(--red-mid);
+}
+
+.persona.active {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+}
+
+.persona.active span {
+  color: #ffd6db;
+}
+
+.score {
+  display: inline-block;
+  min-width: 34px;
+  padding: 3px 6px;
+  border-radius: 7px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.score.big {
+  min-width: 44px;
+  font-size: 0.95rem;
+  padding: 4px 8px;
+}
+
+.score.empty {
+  background: #f3efef;
+  color: var(--muted);
+}
+
+.pillar-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.pillar-list li {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 10px;
+}
+
+.pillar-list span {
+  color: var(--muted);
+}
+
+table.weights td,
+table.weights th {
+  padding: 6px 8px;
+}
+
+.liv-block {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(320px, 1.2fr);
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 760px) {
+  .liv-block {
+    grid-template-columns: 1fr;
+  }
+}
+
+.liv-overall {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.nearby-table td {
+  padding: 7px 8px;
+  white-space: normal;
+}
+
+.nearby-table td:first-child {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
 /* ---------- map ---------- */
 
 #map {

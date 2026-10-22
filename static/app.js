@@ -137,12 +137,13 @@ const metricFmt = (metric) => (metric === "count" ? fmtNum : metric.includes("ps
 // ================= routing =================
 
 const state = { meta: null, loaded: {}, analyseSub: "explore" };
-const TABS = ["overview", "building", "analyse", "map"];
+const TABS = ["overview", "building", "analyse", "livability", "map"];
 const ANALYSE_SUBS = ["explore", "towns", "insights"];
 const LOADERS = {
   overview: loadOverview,
   building: () => {},
   map: loadMap,
+  livability: loadLivability,
   explore: initExplore,
   towns: loadTowns,
   insights: loadInsights,
@@ -624,7 +625,9 @@ function renderBuilding() {
           <tbody>${d.type_mix.map((t) => `<tr><td>${esc(titleCase(t.flat_type))}</td><td class="num">${fmtNum(t.count)}</td><td class="num">${fmtFull(t.median_price)}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">No resales on record yet</td></tr>`}</tbody>
         </table></div>
       </div>
-    </div>`;
+    </div>
+    <div class="card" id="bld-liv" style="margin-top: 16px"></div>`;
+  renderBlockLivability(d);
 
   bindSegmented("#bld-period", (v) => {
     building.period = v;
@@ -1492,6 +1495,234 @@ async function loadInsightsData() {
       .join("")}</tbody>`;
   $("#table-priciest").innerHTML = blockTable(d.priciest_blocks, false);
   $("#table-value").innerHTML = blockTable(d.best_value, true);
+}
+
+// ================= livability =================
+
+const liv = { meta: null, persona: "balanced", town: "", sort: "overall", minLease: "", maxPsf: "", rows: [], total: 0 };
+
+const PERSONA_BLURBS = {
+  balanced: "Every pillar counts equally",
+  family: "Schools, parks and clinics count most",
+  commuter: "MRT access and CBD distance count most",
+  retiree: "Clinics, hawker food and parks count most",
+  budget: "Value and lease left count most",
+};
+const PILLAR_SHORT = { transport: "MRT", cbd: "CBD", food: "Food", health: "Clinic", green: "Green", schools: "School", value: "Value", lease: "Lease" };
+
+const fmtDist = (m) => (m == null ? "–" : m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`);
+
+function scoreCell(v, big = false) {
+  if (v == null) return `<span class="score empty">–</span>`;
+  const t = (v - 1) / 9;
+  return `<span class="score ${big ? "big" : ""}" style="background:${colorScale(t)};color:${t > 0.4 ? "#fff" : "#5a0614"}">${v.toFixed(1)}</span>`;
+}
+
+async function loadLivability() {
+  const m = (liv.meta = await api("/api/livability/meta"));
+  if (!m.scored_blocks) {
+    $("#liv-subtitle").textContent = "Livability scores haven't been built yet. Run build_livability.py, then reload.";
+    return;
+  }
+  $("#liv-subtitle").textContent = `${fmtNum(m.scored_blocks)} of ${fmtNum(m.residential_blocks)} residential HDB blocks, each scored 1–10 on ${m.pillars.length} pillars. Pick who's moving in.`;
+
+  $("#liv-personas").innerHTML = m.personas
+    .map(
+      (p) => `<button class="persona ${p.key === liv.persona ? "active" : ""}" data-persona="${esc(p.key)}">
+        <b>${esc(p.label)}</b><span>${esc(PERSONA_BLURBS[p.key] || "")}</span></button>`
+    )
+    .join("");
+  $("#liv-personas").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-persona]");
+    if (!btn) return;
+    liv.persona = btn.dataset.persona;
+    $$("#liv-personas .persona").forEach((b) => b.classList.toggle("active", b === btn));
+    loadLivTowns();
+    loadLivBlocks(true);
+  });
+
+  $("#liv-method").innerHTML = `
+    <ul class="pillar-list">${m.pillars.map((p) => `<li><b>${esc(p.label)}</b><span>${esc(p.desc)}</span></li>`).join("")}</ul>
+    <div class="table-wrap" style="margin-top: 14px"><table class="weights">
+      <thead><tr><th>Weights</th>${m.pillars.map((p) => `<th class="num">${PILLAR_SHORT[p.key]}</th>`).join("")}</tr></thead>
+      <tbody>${m.personas
+        .map((per) => `<tr><td>${esc(per.label)}</td>${m.pillars.map((p) => `<td class="num">${per.weights[p.key] || "–"}</td>`).join("")}</tr>`)
+        .join("")}</tbody></table></div>
+    <p class="muted small" style="margin: 14px 0 0; line-height: 1.6">
+      Each pillar ranks a block against every other scored HDB block, so 10 means top of the pack and 5.5 is the middle.
+      Distances are straight-line, not walking routes. Sources: LTA MRT/LRT exits, NEA hawker centres, MOH CHAS clinics,
+      NParks parks, MOE primary schools, HDB resale prices. Supermarkets aren't included because data.gov.sg no longer publishes that dataset.
+      Blocks appear here once they've been geocoded.</p>`;
+
+  fillSelect($("#liv-town"), state.meta.towns.filter((t) => t !== "LIM CHU KANG"));
+  $("#liv-sort").insertAdjacentHTML("beforeend", m.pillars.map((p) => `<option value="${esc(p.key)}">Sort: ${esc(p.label)}</option>`).join(""));
+  const onFilter = () => {
+    liv.town = $("#liv-town").value;
+    liv.sort = $("#liv-sort").value;
+    liv.minLease = $("#liv-lease").value;
+    liv.maxPsf = $("#liv-psf").value;
+    highlightLivTown();
+    loadLivBlocks(true);
+  };
+  ["#liv-town", "#liv-sort", "#liv-lease", "#liv-psf"].forEach((sel) => $(sel).addEventListener("change", onFilter));
+  $("#liv-more").addEventListener("click", () => loadLivBlocks(false));
+  $("#liv-towns").addEventListener("click", (e) => {
+    const row = e.target.closest("[data-town]");
+    if (!row) return;
+    $("#liv-town").value = liv.town === row.dataset.town ? "" : row.dataset.town;
+    onFilter();
+  });
+  bindRowClicks("#liv-blocks");
+
+  await loadLivTowns();
+  loadLivBlocks(true);
+}
+
+async function loadLivTowns() {
+  const data = await withLoading($("#liv-towns").closest(".card"), api("/api/livability/towns", { persona: liv.persona }));
+  const pillars = liv.meta.pillars;
+  $("#liv-towns").innerHTML = `
+    <thead><tr><th>#</th><th>Town</th><th class="num">Score</th>${pillars.map((p) => `<th class="num" title="${esc(p.label)}">${PILLAR_SHORT[p.key]}</th>`).join("")}</tr></thead>
+    <tbody>${data.towns
+      .map(
+        (t, i) => `<tr class="clickable" data-town="${esc(t.town)}"><td class="muted">${i + 1}</td>
+          <td><b>${esc(titleCase(t.town))}</b><div class="muted small">${fmtNum(t.blocks)} blocks</div></td>
+          <td class="num">${scoreCell(t.overall, true)}</td>
+          ${pillars.map((p) => `<td class="num">${scoreCell(t[`score_${p.key}`])}</td>`).join("")}</tr>`
+      )
+      .join("")}</tbody>`;
+  highlightLivTown();
+
+  const top = data.towns[0];
+  const persona = liv.meta.personas.find((p) => p.key === liv.persona);
+  $("#liv-kpis").innerHTML = `
+    <div class="kpi hero"><div class="label">Best town · ${esc(persona.label)}</div>
+      <div class="value">${esc(titleCase(top.town))}</div><div class="sub">Median block scores ${top.overall.toFixed(1)} / 10</div></div>
+    <div class="kpi" id="liv-top-block"><div class="label">Best block · ${esc(persona.label)}</div><div class="value">–</div></div>
+    <div class="kpi"><div class="label">Blocks scored</div><div class="value">${fmtNum(liv.meta.scored_blocks)}</div>
+      <div class="sub">of ${fmtNum(liv.meta.residential_blocks)} residential blocks</div></div>`;
+}
+
+function highlightLivTown() {
+  $$("#liv-towns tr[data-town]").forEach((tr) => (tr.style.background = tr.dataset.town === liv.town ? "var(--red-soft)" : ""));
+}
+
+async function loadLivBlocks(reset) {
+  if (reset) liv.rows = [];
+  const data = await withLoading(
+    $("#liv-blocks").closest(".card"),
+    api("/api/livability/blocks", {
+      persona: liv.persona,
+      town: liv.town,
+      sort: liv.sort,
+      min_lease: liv.minLease,
+      max_psf: liv.maxPsf,
+      limit: 50,
+      offset: liv.rows.length,
+    })
+  );
+  liv.rows = liv.rows.concat(data.rows);
+  liv.total = data.total;
+  const pillars = liv.meta.pillars;
+  $("#liv-blocks").innerHTML = `
+    <thead><tr><th>#</th><th>Block</th><th class="num">Score</th>${pillars.map((p) => `<th class="num" title="${esc(p.label)}">${PILLAR_SHORT[p.key]}</th>`).join("")}
+      <th class="num">$ psf</th><th class="num">Lease left</th></tr></thead>
+    <tbody>${
+      liv.rows
+        .map(
+          (r, i) => `<tr class="clickable" data-unit="${esc(r.unit_id)}"><td class="muted">${i + 1}</td>
+            <td>${esc(blockLabel(r.unit_id))}<div class="muted small">${esc(titleCase(r.town))}</div></td>
+            <td class="num">${scoreCell(r.overall, true)}</td>
+            ${pillars.map((p) => `<td class="num">${scoreCell(r[`score_${p.key}`])}</td>`).join("")}
+            <td class="num">${fmtPsf(r.median_psf)}${r.psf_source === "town" ? `<span class="muted" title="No recent resales; town median used">*</span>` : ""}</td>
+            <td class="num">${r.lease_left_years != null ? `${r.lease_left_years} yrs` : "–"}</td></tr>`
+        )
+        .join("") || `<tr><td colspan="${pillars.length + 5}" class="muted">No blocks match these filters</td></tr>`
+    }</tbody>`;
+  $("#liv-count").textContent = `Showing ${fmtNum(liv.rows.length)} of ${fmtNum(liv.total)} blocks · * no recent resales, town median $ psf used`;
+  $("#liv-more").style.display = liv.rows.length < liv.total ? "" : "none";
+
+  if (reset && !liv.town && liv.sort === "overall" && !liv.minLease && !liv.maxPsf && liv.rows[0]) {
+    const best = liv.rows[0];
+    $("#liv-top-block").innerHTML = `<div class="label">Best block · ${esc(liv.meta.personas.find((p) => p.key === liv.persona).label)}</div>
+      <div class="value" style="font-size:1.25rem">${esc(blockLabel(best.unit_id))}</div>
+      <div class="sub">${esc(titleCase(best.town))} · ${best.overall.toFixed(1)} / 10</div>`;
+    $("#liv-top-block").style.cursor = "pointer";
+    $("#liv-top-block").onclick = () => openBlock(best.unit_id);
+  }
+}
+
+function renderBlockLivability(d) {
+  const box = $("#bld-liv");
+  const lv = d.livability;
+  if (!lv) {
+    box.innerHTML = `<h3>Livability</h3><p class="muted">${
+      d.listed ? "Not scored yet. Scores appear once this block has been geocoded." : "Only blocks in HDB's current register are scored."
+    }</p>`;
+    return;
+  }
+  const pillars = [
+    ["transport", "Transport"],
+    ["cbd", "CBD access"],
+    ["food", "Hawker food"],
+    ["health", "Healthcare"],
+    ["green", "Green space"],
+    ["schools", "Schools"],
+    ["value", "Value"],
+    ["lease", "Lease"],
+  ];
+  const personaLabels = { balanced: "Balanced", family: "Young family", commuter: "Commuter", retiree: "Retiree", budget: "Budget" };
+  box.innerHTML = `
+    <div class="card-head"><h3>Livability</h3>
+      <a class="link small" data-go-liv>See town rankings →</a></div>
+    <div class="liv-block">
+      <div class="chart" style="height: 300px"><canvas id="chart-block-liv"></canvas></div>
+      <div>
+        <div class="liv-overall">${Object.entries(lv.overall)
+          .map(([k, v]) => `<div><div class="small muted">${personaLabels[k] || k}</div>${scoreCell(v, true)}</div>`)
+          .join("")}</div>
+        <p class="small muted" style="margin: 10px 0 14px">Balanced score beats ${Math.round(lv.better_than * 100)}% of scored HDB blocks.</p>
+        <table class="nearby-table"><tbody>
+          <tr><td>MRT / LRT</td><td><b>${esc(titleCase(lv.nearest_mrt).replace(/\b(Mrt|Lrt)\b/g, (m) => m.toUpperCase()))}</b></td><td class="num">${fmtDist(lv.nearest_mrt_m)}</td><td class="muted small">${lv.stations_1km} stations ≤1 km</td></tr>
+          <tr><td>CBD</td><td>Raffles Place</td><td class="num">${lv.cbd_km.toFixed(1)} km</td><td class="muted small">straight line</td></tr>
+          <tr><td>Hawker</td><td><b>${esc(lv.nearest_hawker)}</b></td><td class="num">${fmtDist(lv.nearest_hawker_m)}</td><td class="muted small">${lv.hawkers_1km} ≤1 km</td></tr>
+          <tr><td>Clinic</td><td><b>${esc(titleCase(lv.nearest_clinic))}</b></td><td class="num">${fmtDist(lv.nearest_clinic_m)}</td><td class="muted small">${lv.clinics_1km} CHAS ≤1 km</td></tr>
+          <tr><td>Park</td><td><b>${esc(titleCase(lv.nearest_park))}</b></td><td class="num">${fmtDist(lv.nearest_park_m)}</td><td class="muted small">${lv.parks_1km} ≤1 km</td></tr>
+          <tr><td>Primary school</td><td><b>${esc(titleCase(lv.nearest_primary))}</b></td><td class="num">${fmtDist(lv.nearest_primary_m)}</td><td class="muted small">${lv.primary_1km} ≤1 km · ${lv.primary_2km} ≤2 km</td></tr>
+        </tbody></table>
+      </div>
+    </div>`;
+  box.querySelector("[data-go-liv]").addEventListener("click", () => go("#livability"));
+
+  drawChart("chart-block-liv", {
+    type: "radar",
+    data: {
+      labels: pillars.map(([, label]) => label),
+      datasets: [
+        {
+          label: "This block",
+          data: pillars.map(([k]) => lv[`score_${k}`]),
+          borderColor: "#c8102e",
+          backgroundColor: "rgba(200,16,46,0.15)",
+          pointBackgroundColor: "#c8102e",
+          pointRadius: 3,
+        },
+        {
+          label: `${titleCase(lv.town)} median`,
+          data: pillars.map(([k]) => lv.town_scores[k]),
+          borderColor: "#9a8f90",
+          borderDash: [4, 4],
+          backgroundColor: "transparent",
+          pointRadius: 0,
+        },
+      ],
+    },
+    options: {
+      interaction: { mode: "nearest", intersect: false },
+      scales: { r: { min: 0, max: 10, ticks: { stepSize: 2, backdropColor: "transparent" }, pointLabels: { font: { size: 11, weight: "600" } } } },
+      plugins: { tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.r.toFixed(1)}` } } },
+    },
+  });
 }
 
 // ================= map =================
