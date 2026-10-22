@@ -326,7 +326,42 @@ def api_overview():
             )
         )
 
+        register = dict(
+            db.execute(
+                """
+                SELECT SUM(residential = 'Y') AS residential_blocks,
+                       SUM(CASE WHEN residential = 'Y' THEN total_dwelling_units END) AS homes,
+                       COUNT(DISTINCT town) AS towns
+                FROM property_info
+                """
+            ).fetchone()
+        )
+        town_stats = rows_to_dicts(
+            db.execute(
+                """
+                SELECT town, median(resale_price) AS median_price, COUNT(*) AS count
+                FROM transactions WHERE month BETWEEN ? AND ? GROUP BY town HAVING count >= 50
+                """,
+                (last12_from, latest),
+            )
+        )
+        tallest = dict(
+            db.execute(
+                "SELECT unit_id, max_floor_lvl FROM property_info WHERE residential = 'Y' ORDER BY max_floor_lvl DESC LIMIT 1"
+            ).fetchone()
+        )
+        hero = {
+            **register,
+            "transaction_count": db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0],
+            "month_min": db.execute("SELECT MIN(month) FROM transactions").fetchone()[0],
+            "month_max": latest,
+            "priciest_town": max(town_stats, key=lambda r: r["median_price"]),
+            "busiest_town": max(town_stats, key=lambda r: r["count"]),
+            "tallest": tallest,
+        }
+
         return {
+            "hero": hero,
             "latest_month": latest,
             "window": {"from": last12_from, "to": latest},
             "current": current,

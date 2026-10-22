@@ -175,9 +175,44 @@ function openPostal(postal) {
 
 // ================= overview =================
 
+function renderHero(h) {
+  const stats = [
+    [h.transaction_count, "Resales recorded"],
+    [h.residential_blocks, "HDB blocks"],
+    [h.homes, "HDB homes"],
+    [h.towns, "Towns"],
+  ];
+  $("#hero").innerHTML = `
+    <div class="hero-stats">
+      ${stats.map(([v, label]) => `<div><div class="hero-num" data-count="${v}">0</div><div class="hero-label">${label}</div></div>`).join("")}
+      <div><div class="hero-num">${esc(h.month_max)}</div><div class="hero-label">Data snapshot · since ${esc(h.month_min.slice(0, 4))}</div></div>
+    </div>
+    <div class="hero-highlights">
+      <span>Priciest town: <b>${esc(titleCase(h.priciest_town.town))} · ${fmtMoney(h.priciest_town.median_price)} median</b></span>
+      <span>Busiest town: <b>${esc(titleCase(h.busiest_town.town))} · ${fmtNum(h.busiest_town.count)} resales</b></span>
+      <span>Tallest block: <a class="hero-link" data-unit="${esc(h.tallest.unit_id)}">${esc(blockLabel(h.tallest.unit_id))} · ${h.tallest.max_floor_lvl} storeys</a></span>
+      <img class="hero-otter otter-bob" src="/static/otter.svg" width="34" height="34" alt="">
+    </div>
+    <div class="hero-foot">
+      Contains information from data.gov.sg and OneMap, Singapore Land Authority · Town figures are medians of the last 12 months of resales ·
+      Estimates, not valuations · snapshot ${esc(h.month_max)}.
+    </div>`;
+  $("#hero .hero-link").addEventListener("click", (e) => openBlock(e.currentTarget.dataset.unit));
+
+  const start = performance.now();
+  const tick = (now) => {
+    const t = Math.min(1, (now - start) / 900);
+    const eased = 1 - (1 - t) ** 3;
+    $$("#hero [data-count]").forEach((el) => (el.textContent = Math.round(+el.dataset.count * eased).toLocaleString()));
+    if (t < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
 async function loadOverview() {
   const data = await withLoading($("#overview-kpis"), api("/api/overview"));
   const { current: cur, previous: prev, record } = data;
+  renderHero(data.hero);
   $("#overview-subtitle").textContent = `Last 12 months: ${fmtMonth(data.window.from)} – ${fmtMonth(data.window.to)}, compared with the 12 months before.`;
 
   $("#overview-kpis").innerHTML = `
