@@ -12,7 +12,6 @@ import os
 import pathlib
 import re
 import sqlite3
-import statistics
 import threading
 import time
 import urllib.error
@@ -21,7 +20,7 @@ import urllib.request
 
 from flask import Flask, Response, abort, g, jsonify, request, send_from_directory
 
-from build_webapp_db import GEOCODE_CACHE_FILE, sync_geocode
+from build_webapp_db import GEOCODE_CACHE_FILE, Median, sync_geocode
 
 ROOT = pathlib.Path(__file__).parent
 DB_FILE = ROOT / "data" / "hdb.db"
@@ -88,20 +87,26 @@ ROAD_ABBREVIATIONS = {
 app = Flask(__name__, static_folder=None)
 
 _cache: dict = {}
-_geocode_sync = {"mtime": 0.0, "checked": 0.0}
+_geocode_sync = {"size": -1, "checked": 0.0}
 _geocode_lock = threading.Lock()
+GEOCODE_SIZE_KEY = "__geocode_cache_size"
 
 
-class Median:
-    def __init__(self):
-        self.values = []
-
-    def step(self, value):
-        if value is not None:
-            self.values.append(value)
-
-    def finalize(self):
-        return statistics.median(self.values) if self.values else None
+def load_precomputed() -> None:
+    """Seed the cache with responses saved by precompute.py at build time."""
+    if not DB_FILE.exists():
+        return
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        rows = conn.execute("SELECT key, body FROM precomputed").fetchall()
+    except sqlite3.OperationalError:
+        return
+    finally:
+        conn.close()
+    for key, body in rows:
+        _cache[key] = json.loads(body)
+    # The saved map/meta match the geocode cache as of the build; only re-sync if it changes.
+    _geocode_sync["size"] = _cache.pop(GEOCODE_SIZE_KEY, -1)
 
 
 def get_db() -> sqlite3.Connection:
@@ -126,15 +131,15 @@ def maybe_sync_geocode() -> None:
         return
     with _geocode_lock:
         _geocode_sync["checked"] = now
-        mtime = GEOCODE_CACHE_FILE.stat().st_mtime
-        if mtime == _geocode_sync["mtime"]:
+        size = GEOCODE_CACHE_FILE.stat().st_size
+        if size == _geocode_sync["size"]:
             return
         conn = sqlite3.connect(DB_FILE)
         try:
             sync_geocode(conn)
         finally:
             conn.close()
-        _geocode_sync["mtime"] = mtime
+        _geocode_sync["size"] = size
         _cache.pop("map", None)
         _cache.pop("meta", None)
 
@@ -494,26 +499,21 @@ def api_compare():
     towns = [t for t in request.args.getlist("town") if t][:8]
     flat_type = request.args.get("flat_type") or ""
     metric = "price_psf" if request.args.get("metric") == "psf" else "resale_price"
+    column = "median_psf" if metric == "price_psf" else "median_price"
     if not towns:
         return jsonify({"series": []})
 
-    def compute():
-        type_clause = "AND flat_type = ?" if flat_type else ""
-        rows = db.execute(
-            f"""
-            SELECT town, year, median({metric}) AS value, COUNT(*) AS count
-            FROM transactions
-            WHERE town IN ({', '.join('?' * len(towns))}) {type_clause}
-            GROUP BY town, year ORDER BY year
-            """,
-            [*towns, *([flat_type] if flat_type else [])],
-        )
-        series = {}
-        for r in rows:
-            series.setdefault(r["town"], []).append({"year": r["year"], "value": r["value"], "count": r["count"]})
-        return {"metric": metric, "series": [{"town": t, "points": series.get(t, [])} for t in towns]}
-
-    return jsonify(cached(f"compare:{metric}:{flat_type}:{','.join(towns)}", compute))
+    rows = db.execute(
+        f"""
+        SELECT town, year, {column} AS value, count FROM compare_stats
+        WHERE flat_type = ? AND town IN ({', '.join('?' * len(towns))}) ORDER BY year
+        """,
+        [flat_type, *towns],
+    )
+    series = {}
+    for r in rows:
+        series.setdefault(r["town"], []).append({"year": r["year"], "value": r["value"], "count": r["count"]})
+    return jsonify({"metric": metric, "series": [{"town": t, "points": series.get(t, [])} for t in towns]})
 
 
 # ---------- insights ----------
@@ -1040,6 +1040,8 @@ def warm_cache() -> None:
         for path in ("/api/meta", "/api/overview", "/api/summary", "/api/towns", "/api/insights", "/api/map"):
             client.get(path)
 
+
+load_precomputed()
 
 if os.environ.get("WARM_CACHE") == "1":
     threading.Thread(target=warm_cache, daemon=True).start()

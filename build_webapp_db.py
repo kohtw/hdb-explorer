@@ -12,6 +12,7 @@ cache file while it runs, so geocoding progress shows up without a rebuild.
 import csv
 import pathlib
 import sqlite3
+import statistics
 
 from build_units_master import TOWN_CODE_TO_NAME
 
@@ -49,6 +50,20 @@ PROPERTY_FLAG_COLUMNS = [
     "multistorey_carpark",
     "precinct_pavilion",
 ]
+
+
+class Median:
+    """SQLite aggregate: register with conn.create_aggregate("median", 1, Median)."""
+
+    def __init__(self):
+        self.values = []
+
+    def step(self, value):
+        if value is not None:
+            self.values.append(value)
+
+    def finalize(self):
+        return statistics.median(self.values) if self.values else None
 
 
 def to_int(value: str) -> int | None:
@@ -187,6 +202,24 @@ def load_extra_blocks(conn: sqlite3.Connection) -> None:
     print(f"Found {count} blocks with resale history that aren't in property_info")
 
 
+def load_compare_stats(conn: sqlite3.Connection) -> None:
+    """Yearly medians per town (all types as flat_type '', and per flat type) for the Towns chart."""
+    conn.create_aggregate("median", 1, Median)
+    conn.execute(
+        """
+        CREATE TABLE compare_stats AS
+        SELECT town, '' AS flat_type, year, median(resale_price) AS median_price,
+               median(price_psf) AS median_psf, COUNT(*) AS count
+        FROM transactions GROUP BY town, year
+        UNION ALL
+        SELECT town, flat_type, year, median(resale_price), median(price_psf), COUNT(*)
+        FROM transactions GROUP BY town, flat_type, year
+        """
+    )
+    conn.execute("CREATE INDEX idx_compare ON compare_stats(flat_type, town)")
+    print("Built compare_stats")
+
+
 def create_geocode_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -235,6 +268,7 @@ def main() -> None:
     load_transactions(conn)
     load_property_info(conn)
     load_extra_blocks(conn)
+    load_compare_stats(conn)
     print(f"Loaded {sync_geocode(conn)} geocoded blocks")
     conn.commit()
     conn.execute("ANALYZE")
