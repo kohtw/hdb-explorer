@@ -724,6 +724,76 @@ function typeValue(stats) {
   return building.metric === "psf" ? stats.median_psf : stats.median_price;
 }
 
+const STATION_W = 140;
+
+// A little MRT station at the right of the scene, plus the trip from the block's door to it.
+function mrtSceneSvg({ lv, W, groundY, canalY, fromX }) {
+  const lines = (lv.rail_station_lines || "").split(",").filter(Boolean);
+  const mainColor = (LINE_INFO[lines[0]] || ["", "#c8102e"])[1];
+  const name = stationName(lv.rail_station);
+  const x = W - STATION_W - 16;
+  const trackY = groundY - 128;
+  const roofY = groundY - 72;
+  const byBus = lv.rail_how !== "walk";
+  const tripText = byBus
+    ? `${titleCase(lv.rail_how)} · ${fmtMin(lv.rail_min)}`
+    : `${fmtDist(lv.nearest_exit_m)} · ${fmtMin(lv.rail_min)} walk`;
+  const nameSize = Math.min(10, 112 / Math.max(1, name.length * 0.6));
+  const pathY = groundY + 11;
+  const pathFrom = fromX + 8;
+  const pathTo = x + STATION_W / 2;
+  const travel = pathTo - pathFrom - 24;
+  const pillW = tripText.length * 5.6 + 18;
+  const pillX = Math.min(Math.max((pathFrom + pathTo) / 2, pathFrom + pillW / 2 + 4), x - pillW / 2 - 4);
+
+  const chips = lines
+    .map((g, i) => {
+      const [label, color] = LINE_INFO[g] || [g, "#6f6466"];
+      const cx = x + STATION_W / 2 - (lines.length * 26) / 2 + i * 26;
+      return `<rect x="${cx}" y="${roofY + 34}" width="22" height="12" rx="3" fill="${color}"/>
+        <text x="${cx + 11}" y="${roofY + 43}" font-size="8" font-weight="800" fill="#fff" text-anchor="middle">${esc(label)}</text>`;
+    })
+    .join("");
+
+  const trainWindows = Array.from({ length: 6 }, (_, i) => `<rect x="${12 + i * 17}" y="5" width="11" height="8" rx="2" fill="#cfe4f2"/>`).join("");
+  const traveller = byBus
+    ? `<g transform="translate(0,-13)">
+         <rect x="-14" y="0" width="28" height="12" rx="3" fill="#c8102e"/>
+         <rect x="-11" y="2" width="6" height="4" rx="1" fill="#fff"/><rect x="-3" y="2" width="6" height="4" rx="1" fill="#fff"/><rect x="5" y="2" width="6" height="4" rx="1" fill="#fff"/>
+         <circle cx="-8" cy="12" r="2.6" fill="#1f1a1b"/><circle cx="8" cy="12" r="2.6" fill="#1f1a1b"/></g>`
+    : standingOtter(0, 0, 0.5, "");
+
+  return `
+  <g class="mrt-scene">
+    <title>${esc(name)} · ${esc(tripText)}</title>
+    <rect x="${x - 60}" y="${trackY}" width="${W - x + 60}" height="7" rx="2" fill="#b9aeb0"/>
+    <rect x="${x - 40}" y="${trackY + 7}" width="8" height="${roofY - trackY - 7}" fill="#d9cfd0"/>
+    <rect x="${x + STATION_W + 8}" y="${trackY + 7}" width="8" height="${roofY - trackY - 7}" fill="#d9cfd0"/>
+    <g transform="translate(${x - 20},${trackY - 22})"><g class="mrt-train">
+      <rect x="0" y="0" width="118" height="21" rx="8" fill="#fff" stroke="#d9cfd0"/>
+      ${trainWindows}
+      <rect x="0" y="15" width="118" height="4" fill="${mainColor}"/>
+      <rect x="2" y="3" width="6" height="11" rx="2" fill="#cfe4f2"/>
+    </g></g>
+
+    <path d="M${x - 4} ${roofY + 4} Q${x + STATION_W / 2} ${roofY - 22} ${x + STATION_W + 4} ${roofY + 4} Z" fill="${mainColor}"/>
+    <rect x="${x}" y="${roofY + 2}" width="${STATION_W}" height="${groundY - roofY - 2}" rx="4" fill="#fff" stroke="#e3d6d8"/>
+    <rect x="${x + 10}" y="${roofY + 10}" width="${STATION_W - 20}" height="18" rx="4" fill="#1f1a1b"/>
+    <text x="${x + STATION_W / 2}" y="${roofY + 22.5}" font-size="${nameSize.toFixed(1)}" font-weight="800" fill="#fff" text-anchor="middle">${esc(name)}</text>
+    ${chips}
+    <rect x="${x + STATION_W / 2 - 24}" y="${groundY - 22}" width="22" height="22" rx="2" fill="#cfe4f2" stroke="#b3cfe0"/>
+    <rect x="${x + STATION_W / 2 + 2}" y="${groundY - 22}" width="22" height="22" rx="2" fill="#cfe4f2" stroke="#b3cfe0"/>
+
+    <path class="mrt-path" d="M${pathFrom} ${pathY} L${pathTo} ${pathY}" stroke="#8b0a1f" stroke-width="2" stroke-dasharray="5 5" fill="none"/>
+    <circle cx="${pathTo}" cy="${pathY}" r="3.5" fill="#8b0a1f"/>
+    <g transform="translate(${pathFrom + 12},${pathY})"><g class="mrt-traveller" style="--travel:${Math.max(0, travel).toFixed(0)}px">${traveller}</g></g>
+    <g transform="translate(${pillX},${groundY - 16})">
+      <rect x="${-pillW / 2}" y="-11" width="${pillW}" height="20" rx="10" fill="#fff" stroke="#f0dfe1"/>
+      <text x="0" y="3" font-size="10" font-weight="800" fill="#8b0a1f" text-anchor="middle">${esc(tripText)}</text>
+    </g>
+  </g>`;
+}
+
 // Spread the block's unit mix across one floor's worth of columns (largest-remainder rounding).
 // Types averaging under half a unit per floor can't be on every floor, so they're listed, not drawn.
 function allocateColumns(fullLayout, floors) {
@@ -781,7 +851,8 @@ function drawBuildingSvg() {
   const { values, min: vMin, max: vMax, norm } = colorDomain(bands, split, groups);
   const typeStats = (band, type) => band.types.find((t) => t.flat_type === type);
 
-  const W = 560;
+  const station = d.livability?.rail_station ? d.livability : null;
+  const W = station ? 760 : 560;
   const floorH = Math.max(8, Math.min(26, Math.floor(470 / floors)));
   const bw = split ? Math.max(210, Math.min(260, groups.reduce((s, g) => s + g.cols, 0) * 22)) : 210;
   const bx = split ? 140 - (bw - 210) / 2 : 150;
@@ -987,6 +1058,7 @@ function drawBuildingSvg() {
 
     ${tree(bx - 48, 1)}${tree(bx - 92, 0.75)}${tree(bx + bw + 40, 0.9)}${tree(bx + bw + 84, 0.7)}
     ${otters}
+    ${station ? mrtSceneSvg({ lv: station, W, groundY, canalY, fromX: bx + bw }) : ""}
     ${columnLabels}
     ${floorNums}
     ${labels}
