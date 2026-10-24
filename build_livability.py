@@ -1,7 +1,8 @@
 """Score every geocoded HDB residential block on livability pillars (1-10).
 
 Reads data/hdb.db (blocks, geocodes, resales) and the layers saved by
-download_amenities.py, and writes a `livability` table to data/hdb.db.
+download_amenities.py, and writes a `livability` table to data/hdb.db, plus an
+`amenities` table of every mapped place for the web app's map and nearby lists.
 
 Each pillar blends several raw measures. Every measure is converted to a
 percentile rank across all scored blocks, the ranks are combined with fixed
@@ -30,6 +31,7 @@ DB_FILE = ROOT / "data" / "hdb.db"
 AMENITY_DIR = ROOT / "data" / "amenities"
 SCHOOL_GEOCODE_CACHE = ROOT / "data" / "school_geocode_cache.csv"
 HOSPITAL_GEOCODE_CACHE = ROOT / "data" / "hospital_geocode_cache.csv"
+PARK_GEOCODE_CACHE = ROOT / "data" / "park_geocode_cache.csv"
 ONEMAP_SEARCH_URL = "https://www.onemap.gov.sg/api/common/elastic/search"
 
 LEASE_YEARS = 99
@@ -55,6 +57,18 @@ HOSPITALS = {
     ],
 }
 
+# Parks missing from the NParks points dataset (newer parks, and ones run by other agencies),
+# as (name, OneMap search). The search is shortened where OneMap only indexes part of the name.
+EXTRA_PARKS = [
+    ("Tampines Green Forest Park", "Tampines Green Forest"),
+    ("Tampines Quarry Park", "Tampines Quarry"),
+    ("Punggol Point Park", "Punggol Point Walk"),
+    ("Lorong Halus Wetland", "Lorong Halus Wetland"),
+    ("Singapore Botanic Gardens", "Singapore Botanic Gardens"),
+    ("Gardens by the Bay", "Gardens by the Bay"),
+    ("Marina Barrage", "Marina Barrage"),
+]
+
 PILLARS = [
     {
         "key": "transport", "label": "Transport",
@@ -62,7 +76,11 @@ PILLARS = [
                 "lines at your station, bus services within 400 m",
     },
     {"key": "cbd", "label": "CBD commute", "desc": "Modelled public transport time to Raffles Place, door to door"},
-    {"key": "food", "label": "Hawker food", "desc": "Nearest hawker centre, and hawker centres within 1 km"},
+    {
+        "key": "food", "label": "Food",
+        "desc": "Nearest hawker centre, hawker stalls within 1 km, and food courts and coffee shops within 1 km",
+    },
+    {"key": "shopping", "label": "Shopping", "desc": "Nearest supermarket and supermarkets within 1 km, nearest mall"},
     {
         "key": "health", "label": "Healthcare",
         "desc": "Nearest GP and GPs within 1 km, dentists within 1 km, nearest polyclinic, acute hospital "
@@ -85,24 +103,39 @@ PERSONAS = [
     {
         "key": "family",
         "label": "Young family",
-        "weights": {"transport": 1.5, "cbd": 1, "food": 1, "health": 2, "green": 2, "schools": 3, "value": 1.5, "lease": 1.5},
+        "weights": {
+            "transport": 1.5, "cbd": 1, "food": 1, "shopping": 1.5, "health": 2, "green": 2, "schools": 3, "value": 1.5,
+            "lease": 1.5,
+        },
     },
     {
         "key": "commuter",
         "label": "Commuter",
-        "weights": {"transport": 3, "cbd": 3, "food": 1.5, "health": 0.5, "green": 0.5, "schools": 0, "value": 1, "lease": 0.5},
+        "weights": {
+            "transport": 3, "cbd": 3, "food": 1.5, "shopping": 1, "health": 0.5, "green": 0.5, "schools": 0, "value": 1,
+            "lease": 0.5,
+        },
     },
     {
         "key": "retiree",
         "label": "Retiree",
-        "weights": {"transport": 1.5, "cbd": 0.5, "food": 2.5, "health": 3, "green": 2, "schools": 0, "value": 1, "lease": 0.5},
+        "weights": {
+            "transport": 1.5, "cbd": 0.5, "food": 2.5, "shopping": 2, "health": 3, "green": 2, "schools": 0, "value": 1,
+            "lease": 0.5,
+        },
     },
     {
         "key": "budget",
         "label": "Budget",
-        "weights": {"transport": 1.5, "cbd": 0.5, "food": 1, "health": 0.5, "green": 0.5, "schools": 0.5, "value": 3, "lease": 1.5},
+        "weights": {
+            "transport": 1.5, "cbd": 0.5, "food": 1, "shopping": 1, "health": 0.5, "green": 0.5, "schools": 0.5, "value": 3,
+            "lease": 1.5,
+        },
     },
 ]
+
+# OpenStreetMap often maps a place twice (a point and its building outline); same name this close is one place.
+DUPLICATE_PLACE_M = 150
 
 
 # ---------- data loading ----------
@@ -233,6 +266,65 @@ def load_hospitals() -> dict[str, list[tuple[float, float, str]]]:
     return located
 
 
+def load_extra_parks() -> list[tuple[float, float, str]]:
+    items = [{"name": name, "search": search} for name, search in EXTRA_PARKS]
+
+    def locate(item):
+        return pick_result(onemap_search(item["search"]), required=name_tokens(item["search"]))
+
+    cache = cached_geocodes(PARK_GEOCODE_CACHE, items, "name", locate)
+    points = []
+    for item in items:
+        c = cache.get(item["name"])
+        if c and c.get("latitude"):
+            points.append((float(c["latitude"]), float(c["longitude"]), item["name"]))
+        else:
+            print(f"  could not locate {item['name']}")
+    print(f"{len(points)} of {len(items)} extra parks located")
+    return points
+
+
+def load_hawkers() -> list[tuple[float, float, tuple[str, int, dict]]]:
+    """Open hawker centres as (lat, lon, (name, cooked food stalls, details for the map))."""
+    points = []
+    for f in json.loads((AMENITY_DIR / "hawker_centres.geojson").read_text(encoding="utf-8"))["features"]:
+        props = f["properties"]
+        if f["geometry"]["type"] != "Point" or props.get("STATUS") not in OPEN_HAWKER_STATUSES:
+            continue
+        lon, lat = f["geometry"]["coordinates"][:2]
+        stalls = int(props.get("NUMBER_OF_COOKED_FOOD_STALLS") or 0)
+        detail = {"stalls": stalls, "address": props.get("ADDRESS_MYENV") or "", "photo": props.get("PHOTOURL") or ""}
+        points.append((float(lat), float(lon), (props["NAME"].strip(), stalls, detail)))
+    return points
+
+
+def load_osm_places() -> dict[str, list[tuple[float, float, str]]]:
+    """Supermarkets, malls and food courts from OpenStreetMap, one point per place."""
+    kept = {"supermarket": [], "mall": [], "food_court": []}
+    for p in json.loads((AMENITY_DIR / "osm_places.json").read_text(encoding="utf-8")):
+        twins = kept[p["kind"]]
+        if not any(q[2] == p["name"] and distance_m(q[0], q[1], p["lat"], p["lon"]) < DUPLICATE_PLACE_M for q in twins):
+            twins.append((p["lat"], p["lon"], p["name"]))
+    print(", ".join(f"{len(v)} {k.replace('_', ' ')}s" for k, v in kept.items()) + " from OpenStreetMap")
+    return kept
+
+
+def write_amenities(conn: sqlite3.Connection, layers: dict[str, list[tuple[float, float, str, dict]]]) -> None:
+    conn.execute("DROP TABLE IF EXISTS amenities")
+    conn.execute(
+        "CREATE TABLE amenities (id INTEGER PRIMARY KEY, kind TEXT, name TEXT, latitude REAL, longitude REAL, detail TEXT)"
+    )
+    conn.executemany(
+        "INSERT INTO amenities (kind, name, latitude, longitude, detail) VALUES (?, ?, ?, ?, ?)",
+        [
+            (kind, name, round(lat, 6), round(lon, 6), json.dumps(detail) if detail else None)
+            for kind, points in layers.items()
+            for lat, lon, name, detail in points
+        ],
+    )
+    print("Amenities table: " + ", ".join(f"{len(v)} {k}" for k, v in layers.items()))
+
+
 # ---------- scoring ----------
 
 
@@ -291,9 +383,13 @@ def main() -> None:
     exits = PointIndex(
         load_geojson_points("mrt_exits.geojson", lambda p: (normalize_station(p["STATION_NA"]), p["EXIT_CODE"].strip()))
     )
-    hawkers = PointIndex(
-        load_geojson_points("hawker_centres.geojson", lambda p: p["NAME"].strip(), lambda p: p.get("STATUS") in OPEN_HAWKER_STATUSES)
-    )
+    hawkers = PointIndex(load_hawkers())
+    osm = load_osm_places()
+    supermarkets = PointIndex(osm["supermarket"])
+    malls = PointIndex(osm["mall"])
+    # OpenStreetMap tags many hawker centres as food courts; NEA's list already has those.
+    osm["food_court"] = [p for p in osm["food_court"] if not hawkers.within(p[0], p[1], DUPLICATE_PLACE_M)]
+    food_courts = PointIndex(osm["food_court"])
     gps = PointIndex(
         load_geojson_points("chas_clinics.geojson", lambda p: chas_field(p, "HCI_NAME"), lambda p: chas_field(p, "LICENCE_TYPE") == "MC")
     )
@@ -304,14 +400,16 @@ def main() -> None:
     hospitals = load_hospitals()
     acute = PointIndex(hospitals["acute"])
     community = PointIndex(hospitals["community"])
-    parks = PointIndex(load_geojson_points("parks.geojson", lambda p: p["NAME"].strip()))
+    parks = PointIndex(load_geojson_points("parks.geojson", lambda p: p["NAME"].strip()) + load_extra_parks())
     schools = PointIndex(load_primary_schools())
 
     rows = []
     for b in blocks:
         lat, lon = b["latitude"], b["longitude"]
         mrt_d, (exit_station, exit_code) = exits.nearest(lat, lon)
-        hawker_d, hawker_name = hawkers.nearest(lat, lon)
+        hawker_d, (hawker_name, _, _) = hawkers.nearest(lat, lon)
+        market_d, market_name = supermarkets.nearest(lat, lon)
+        mall_d, mall_name = malls.nearest(lat, lon)
         gp_d, gp_name = gps.nearest(lat, lon)
         poly_d, poly_name = polyclinics.nearest(lat, lon)
         acute_d, acute_name = acute.nearest(lat, lon)
@@ -336,6 +434,13 @@ def main() -> None:
                 "nearest_hawker_m": round(hawker_d),
                 "nearest_hawker": hawker_name,
                 "hawkers_1km": len(hawkers.within(lat, lon, 1000)),
+                "hawker_stalls_1km": sum(stalls for _, (_, stalls, _) in hawkers.within(lat, lon, 1000)),
+                "food_courts_1km": len(food_courts.within(lat, lon, 1000)),
+                "nearest_supermarket_m": round(market_d),
+                "nearest_supermarket": market_name,
+                "supermarkets_1km": len(supermarkets.within(lat, lon, 1000)),
+                "nearest_mall_m": round(mall_d),
+                "nearest_mall": mall_name,
                 "nearest_gp_m": round(gp_d),
                 "nearest_gp": gp_name,
                 "gps_1km": len(gps.within(lat, lon, 1000)),
@@ -383,7 +488,16 @@ def main() -> None:
             (0.15, percentile_ranks(station_mrt_lines, True)),
         ]),
         "cbd": rank("cbd_min", False),
-        "food": blend([(0.5, rank("nearest_hawker_m", False)), (0.5, rank("hawkers_1km", True))]),
+        "food": blend([
+            (0.40, rank("nearest_hawker_m", False)),
+            (0.35, rank("hawker_stalls_1km", True)),
+            (0.25, rank("food_courts_1km", True)),
+        ]),
+        "shopping": blend([
+            (0.40, rank("nearest_supermarket_m", False)),
+            (0.30, rank("supermarkets_1km", True)),
+            (0.30, rank("nearest_mall_m", False)),
+        ]),
         "health": blend([
             (0.20, rank("nearest_gp_m", False)),
             (0.15, rank("gps_1km", True)),
@@ -414,6 +528,19 @@ def main() -> None:
         [tuple(r[c] for c in columns) for r in rows],
     )
     conn.execute("CREATE INDEX idx_liv_town ON livability(town)")
+
+    stations = sorted(set(transport.code_station.values()))
+    write_amenities(conn, {
+        "mrt": [(*transport.station_coord[s], s, {"lines": ",".join(sorted(transport.station_lines[s]))}) for s in stations],
+        "hawker": [(lat, lon, name, detail) for lat, lon, (name, _, detail) in hawkers.points],
+        "food_court": [(*p, None) for p in osm["food_court"]],
+        "supermarket": [(*p, None) for p in osm["supermarket"]],
+        "mall": [(*p, None) for p in osm["mall"]],
+        "primary_school": [(*p, None) for p in schools.points],
+        "park": [(*p, None) for p in parks.points],
+        "polyclinic": [(*p, None) for p in polyclinics.points],
+        "hospital": [(*p, None) for p in acute.points],
+    })
     conn.commit()
     conn.close()
     print(f"Scored {len(rows)} blocks on {len(PILLARS)} pillars")

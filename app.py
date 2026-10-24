@@ -22,6 +22,8 @@ from flask import Flask, Response, abort, g, jsonify, request, send_from_directo
 
 from build_livability import PERSONAS, PILLARS
 from build_webapp_db import GEOCODE_CACHE_FILE, Median, sync_geocode
+from geo import PointIndex
+from transport_model import walk_min
 
 ROOT = pathlib.Path(__file__).parent
 DB_FILE = ROOT / "data" / "hdb.db"
@@ -327,42 +329,7 @@ def api_overview():
             )
         )
 
-        register = dict(
-            db.execute(
-                """
-                SELECT SUM(residential = 'Y') AS residential_blocks,
-                       SUM(CASE WHEN residential = 'Y' THEN total_dwelling_units END) AS homes,
-                       COUNT(DISTINCT town) AS towns
-                FROM property_info
-                """
-            ).fetchone()
-        )
-        town_stats = rows_to_dicts(
-            db.execute(
-                """
-                SELECT town, median(resale_price) AS median_price, COUNT(*) AS count
-                FROM transactions WHERE month BETWEEN ? AND ? GROUP BY town HAVING count >= 50
-                """,
-                (last12_from, latest),
-            )
-        )
-        tallest = dict(
-            db.execute(
-                "SELECT unit_id, max_floor_lvl FROM property_info WHERE residential = 'Y' ORDER BY max_floor_lvl DESC LIMIT 1"
-            ).fetchone()
-        )
-        hero = {
-            **register,
-            "transaction_count": db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0],
-            "month_min": db.execute("SELECT MIN(month) FROM transactions").fetchone()[0],
-            "month_max": latest,
-            "priciest_town": max(town_stats, key=lambda r: r["median_price"]),
-            "busiest_town": max(town_stats, key=lambda r: r["count"]),
-            "tallest": tallest,
-        }
-
         return {
-            "hero": hero,
             "latest_month": latest,
             "window": {"from": last12_from, "to": latest},
             "current": current,
@@ -564,17 +531,6 @@ def api_insights():
         latest = latest_month(db)
         since = shift_month(latest, -35)
 
-        lease_decay = rows_to_dicts(
-            db.execute(
-                """
-                SELECT CAST(remaining_lease_months / 60 AS INTEGER) * 5 AS lease_bucket,
-                       median(price_psf) AS median_psf, COUNT(*) AS count
-                FROM transactions WHERE month >= ? AND flat_type = ?
-                GROUP BY lease_bucket HAVING count >= 20 ORDER BY lease_bucket
-                """,
-                (since, flat_type),
-            )
-        )
         storey_premium = rows_to_dicts(
             db.execute(
                 """
@@ -596,28 +552,6 @@ def api_insights():
                 GROUP BY flat_model HAVING count >= 20 ORDER BY median_psf DESC
                 """,
                 (since, flat_type),
-            )
-        )
-        by_age = rows_to_dicts(
-            db.execute(
-                """
-                SELECT (year - lease_commence_date) / 5 * 5 AS age_bucket,
-                       median(resale_price) AS median_price, median(floor_area_sqm) AS median_area,
-                       COUNT(*) AS count
-                FROM transactions WHERE month >= ? AND flat_type = ?
-                GROUP BY age_bucket HAVING count >= 20 ORDER BY age_bucket
-                """,
-                (since, flat_type),
-            )
-        )
-        seasonality = rows_to_dicts(
-            db.execute(
-                """
-                SELECT CAST(substr(month, 6, 2) AS INTEGER) AS month_num,
-                       COUNT(*) * 1.0 / COUNT(DISTINCT year) AS avg_count
-                FROM transactions WHERE year >= ? GROUP BY month_num ORDER BY month_num
-                """,
-                (int(latest[:4]) - 10,),
             )
         )
         priciest_blocks = rows_to_dicts(
@@ -646,11 +580,8 @@ def api_insights():
         return {
             "flat_type": flat_type,
             "window": {"from": since, "to": latest},
-            "lease_decay": lease_decay,
             "storey_premium": storey_premium,
             "by_model": by_model,
-            "by_age": by_age,
-            "seasonality": seasonality,
             "priciest_blocks": priciest_blocks,
             "best_value": best_value,
         }
@@ -1085,6 +1016,8 @@ def api_block():
             "layout_source": layout_source,
             "nearby": nearby,
             "livability": block_livability(db, unit_id),
+            "prediction": block_prediction(db, unit_id),
+            "amenities": nearby_amenities(db, geo["latitude"], geo["longitude"]) if geo and geo["latitude"] is not None else {},
         }
     )
 
@@ -1192,151 +1125,61 @@ def api_livability_blocks():
     return jsonify({"persona": persona, "total": total, "offset": offset, "rows": rows_to_dicts(rows)})
 
 
-# ---------- correlations ----------
+# ---------- amenities ----------
 
-CORR_FACTORS = [
-    *({"key": f"score_{p['key']}", "label": f"{p['label']} score", "group": "score"} for p in PILLARS),
-    {"key": "median_psf", "label": "$ psf (block median)", "group": "raw"},
-    {"key": "rail_min", "label": "Minutes to rail", "group": "raw"},
-    {"key": "cbd_min", "label": "Commute to CBD (min)", "group": "raw"},
-    {"key": "lines_15min", "label": "Rail lines within 15 min", "group": "raw"},
-    {"key": "interchange_min", "label": "Minutes to interchange", "group": "raw"},
-    {"key": "bus_services_400m", "label": "Bus services within 400 m", "group": "raw"},
-    {"key": "nearest_hawker_m", "label": "Hawker centre distance (m)", "group": "raw"},
-    {"key": "gps_1km", "label": "GPs within 1 km", "group": "raw"},
-    {"key": "nearest_polyclinic_m", "label": "Polyclinic distance (m)", "group": "raw"},
-    {"key": "nearest_hospital_m", "label": "Hospital distance (m)", "group": "raw"},
-    {"key": "nearest_park_m", "label": "Park distance (m)", "group": "raw"},
-    {"key": "primary_1km", "label": "Primary schools within 1 km", "group": "raw"},
-    {"key": "lease_left_years", "label": "Lease left (years)", "group": "raw"},
-]
-CORR_KEYS = {f["key"] for f in CORR_FACTORS}
-PRICE_KEY = "median_psf"
-# Value is computed from $psf, so its correlation with price is circular. CBD and Lease scores are
-# rank transforms of a single raw measure, so they'd duplicate cbd_min / lease_left_years exactly.
-NOT_DRIVERS = {PRICE_KEY, "score_value", "score_cbd", "score_lease"}
-MIN_TOWN_BLOCKS = 30
+# Per kind: how far to look from a block, and how many of the nearest to list.
+NEARBY_AMENITIES = {
+    "hawker": (1500, 4),
+    "food_court": (1000, 4),
+    "supermarket": (1500, 4),
+    "mall": (3000, 3),
+    "primary_school": (2000, 8),
+    "park": (1500, 3),
+    "polyclinic": (6000, 1),
+    "hospital": (12000, 1),
+}
+_amenity_index: dict[str, PointIndex] = {}
 
 
-def average_ranks(values: list[float]) -> list[float]:
-    order = sorted(range(len(values)), key=values.__getitem__)
-    ranks = [0.0] * len(values)
-    i = 0
-    while i < len(order):
-        j = i
-        while j + 1 < len(order) and values[order[j + 1]] == values[order[i]]:
-            j += 1
-        for k in range(i, j + 1):
-            ranks[order[k]] = (i + j) / 2
-        i = j + 1
-    return ranks
+def amenity_rows(db) -> list[dict]:
+    if not table_exists(db, "amenities"):
+        return []
+    rows = rows_to_dicts(db.execute("SELECT id, kind, name, latitude, longitude, detail FROM amenities ORDER BY id"))
+    for r in rows:
+        r["detail"] = json.loads(r["detail"]) if r["detail"] else None
+    return rows
 
 
-def pearson(a: list[float], b: list[float]) -> float | None:
-    n = len(a)
-    ma, mb = sum(a) / n, sum(b) / n
-    cov = sum((x - ma) * (y - mb) for x, y in zip(a, b))
-    va = sum((x - ma) ** 2 for x in a)
-    vb = sum((y - mb) ** 2 for y in b)
-    return cov / (va * vb) ** 0.5 if va and vb else None
-
-
-def spearman(xs: list, ys: list) -> tuple[float | None, int]:
-    pairs = [(x, y) for x, y in zip(xs, ys) if x is not None and y is not None]
-    if len(pairs) < 10:
-        return None, len(pairs)
-    a, b = zip(*pairs)
-    return pearson(average_ranks(list(a)), average_ranks(list(b))), len(pairs)
-
-
-def livability_columns(db, keys: list[str]) -> tuple[list[str], dict[str, list]]:
-    rows = db.execute(f"SELECT town, {', '.join(keys)} FROM livability").fetchall()
-    return [r["town"] for r in rows], {k: [r[k] for r in rows] for k in keys}
-
-
-@app.route("/api/correlations")
-def api_correlations():
+@app.route("/api/amenities")
+def api_amenities():
     db = get_db()
-    if not livability_available(db):
-        return jsonify({"factors": [], "matrix": {}, "drivers": []})
 
     def compute():
-        keys = [f["key"] for f in CORR_FACTORS]
-        towns, cols = livability_columns(db, keys)
-        matrix = {k: {} for k in keys}
-        for i, a in enumerate(keys):
-            matrix[a][a] = 1.0
-            for b in keys[i + 1:]:
-                rho, _ = spearman(cols[a], cols[b])
-                matrix[a][b] = matrix[b][a] = rho
+        kinds: dict[str, list] = {}
+        for r in amenity_rows(db):
+            kinds.setdefault(r["kind"], []).append([r["id"], r["latitude"], r["longitude"], r["name"], r["detail"]])
+        return {"kinds": kinds}
 
-        by_town = {}
-        for idx, town in enumerate(towns):
-            by_town.setdefault(town, []).append(idx)
-        drivers = []
-        for f in CORR_FACTORS:
-            if f["key"] in NOT_DRIVERS:
-                continue
-            overall, n = spearman(cols[f["key"]], cols[PRICE_KEY])
-            # Within-town correlation strips out the location premium of central towns.
-            weighted, total, towns_used = 0.0, 0, 0
-            for idxs in by_town.values():
-                rho, tn = spearman([cols[f["key"]][i] for i in idxs], [cols[PRICE_KEY][i] for i in idxs])
-                if rho is not None and tn >= MIN_TOWN_BLOCKS:
-                    weighted += rho * tn
-                    total += tn
-                    towns_used += 1
-            drivers.append(
-                {**f, "overall": overall, "within_town": weighted / total if total else None, "n": n, "towns_used": towns_used}
-            )
-        drivers.sort(key=lambda d: -abs(d["within_town"] or 0))
-        return {
-            "factors": CORR_FACTORS,
-            "matrix": matrix,
-            "drivers": drivers,
-            "blocks": len(towns),
-            "priced_blocks": sum(v is not None for v in cols[PRICE_KEY]),
-        }
-
-    return jsonify(cached("correlations", compute))
+    return jsonify(cached("amenities", compute))
 
 
-@app.route("/api/correlations/scatter")
-def api_correlations_scatter():
-    db = get_db()
-    x, y = request.args.get("x"), request.args.get("y")
-    if x not in CORR_KEYS or y not in CORR_KEYS:
-        abort(400, "unknown factor")
-    town = request.args.get("town") or ""
-    clauses, params = [f"{x} IS NOT NULL", f"{y} IS NOT NULL"], []
-    if town:
-        clauses.append("town = ?")
-        params.append(town)
-    rows = db.execute(
-        f"SELECT unit_id, town, {x} AS x, {y} AS y FROM livability WHERE {' AND '.join(clauses)}", params
-    ).fetchall()
-    xs = [r["x"] for r in rows]
-    ys = [r["y"] for r in rows]
-    rho, n = spearman(xs, ys)
-    slope = intercept = None
-    if n >= 10:
-        mx, my = sum(xs) / n, sum(ys) / n
-        vx = sum((v - mx) ** 2 for v in xs)
-        if vx:
-            slope = sum((a - mx) * (b - my) for a, b in zip(xs, ys)) / vx
-            intercept = my - slope * mx
-    return jsonify(
-        {
-            "x": x,
-            "y": y,
-            "town": town,
-            "n": n,
-            "rho": rho,
-            "slope": slope,
-            "intercept": intercept,
-            "points": [[r["x"], r["y"], r["unit_id"], r["town"]] for r in rows],
-        }
-    )
+def nearby_amenities(db, lat: float, lon: float) -> dict[str, list[dict]]:
+    if not _amenity_index:
+        by_kind: dict[str, list] = {}
+        for r in amenity_rows(db):
+            by_kind.setdefault(r["kind"], []).append((r["latitude"], r["longitude"], r))
+        _amenity_index.update({kind: PointIndex(points) for kind, points in by_kind.items()})
+    out = {}
+    for kind, (radius, limit) in NEARBY_AMENITIES.items():
+        index = _amenity_index.get(kind)
+        if index is None:
+            continue
+        found = sorted(index.within(lat, lon, radius), key=lambda x: x[0])[:limit]
+        out[kind] = [
+            {"id": r["id"], "name": r["name"], "distance_m": round(d), "walk_min": round(walk_min(d)), "detail": r["detail"]}
+            for d, r in found
+        ]
+    return out
 
 
 def block_livability(db, unit_id: str) -> dict | None:
@@ -1359,6 +1202,61 @@ def block_livability(db, unit_id: str) -> dict | None:
         f"SELECT AVG({overall_expr('balanced')} < ?) FROM livability", (overall["balanced"],)
     ).fetchone()[0]
     return {**dict(row), "overall": overall, "town_scores": town_scores, "better_than": better_than}
+
+
+# ---------- price model ----------
+
+
+def model_meta(db) -> dict:
+    if not table_exists(db, "model_meta"):
+        return {}
+    return {key: json.loads(value) for key, value in db.execute("SELECT key, value FROM model_meta")}
+
+
+@app.route("/api/model")
+def api_model():
+    db = get_db()
+    return jsonify(cached("model", lambda: model_meta(db)))
+
+
+def block_prediction(db, unit_id: str) -> dict | None:
+    """Model value per flat type and storey band, next to the block's actual sales in the last 12 months."""
+    if not table_exists(db, "predictions"):
+        return None
+    rows = rows_to_dicts(
+        db.execute(
+            """
+            SELECT flat_type, flat_model, floor_area_sqm, storey_low, storey_high, pred_price, pred_low, pred_high, pred_psf
+            FROM predictions WHERE unit_id = ? ORDER BY flat_type, storey_low
+            """,
+            (unit_id,),
+        )
+    )
+    if not rows:
+        return None
+    summary = cached("model", lambda: model_meta(db)).get("summary", {})
+    since = shift_month(latest_month(db), -11)
+    # Compare each recent sale with the model's price for that same flat (size, floor, month), not a typical flat.
+    recent = {}
+    if table_exists(db, "sale_predictions"):
+        recent = {
+            r["flat_type"]: dict(r)
+            for r in db.execute(
+                """
+                SELECT flat_type, COUNT(*) AS count, median(resale_price) AS median_price,
+                       median(resale_price / pred_price) - 1 AS vs_model, MAX(month) AS latest_month
+                FROM sale_predictions WHERE unit_id = ? AND month >= ? GROUP BY flat_type
+                """,
+                (unit_id, since),
+            )
+        }
+    return {
+        "month": summary.get("predicted_month"),
+        "mape": summary.get("model", {}).get("mape"),
+        "rows": rows,
+        "recent": recent,
+        "recent_since": since,
+    }
 
 
 @app.errorhandler(400)

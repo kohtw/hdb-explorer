@@ -136,18 +136,17 @@ const metricFmt = (metric) => (metric === "count" ? fmtNum : metric.includes("ps
 
 // ================= routing =================
 
-const state = { meta: null, loaded: {}, analyseSub: "explore" };
-const TABS = ["overview", "building", "analyse", "livability", "map"];
-const ANALYSE_SUBS = ["explore", "towns", "insights", "correlations"];
+const state = { meta: null, loaded: {} };
+// Page sections top to bottom; Building + Map is the hero, the rest scroll beneath it.
+const SECTIONS = ["building", "overview", "towns", "livability", "insights", "explore", "model"];
 const LOADERS = {
   overview: loadOverview,
-  building: () => {},
   map: loadMap,
   livability: loadLivability,
+  model: loadModel,
   explore: initExplore,
   towns: loadTowns,
   insights: loadInsights,
-  correlations: loadCorrelations,
 };
 
 function go(hash) {
@@ -155,41 +154,63 @@ function go(hash) {
   else location.hash = hash;
 }
 
-function showTab(name) {
-  $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
-  $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
-}
-
-function showSubTab(sub) {
-  $$(".subtab").forEach((t) => t.classList.toggle("active", t.dataset.sub === sub));
-  $$(".subview").forEach((v) => v.classList.toggle("active", v.id === `view-${sub}`));
-}
-
 function loadOnce(name) {
-  if (state.loaded[name]) return;
+  if (state.loaded[name] || !LOADERS[name]) return;
   state.loaded[name] = true;
   LOADERS[name]();
 }
 
 function route() {
   let [tab, kind, ...rest] = location.hash.replace(/^#/, "").split("/");
-  // Explore/Towns/Insights used to be top-level tabs; keep their old links working.
-  if (ANALYSE_SUBS.includes(tab)) [tab, kind] = ["analyse", tab];
-  const name = TABS.includes(tab) ? tab : "overview";
-  showTab(name);
+  // Analyse sub-tabs and the Map tab used to be separate pages; keep their old links working.
+  if (tab === "analyse") tab = SECTIONS.includes(kind) ? kind : "explore";
+  if (tab === "map") tab = "building";
+  if (tab === "correlations") tab = "insights";
+  if (!SECTIONS.includes(tab)) return;
 
-  if (name === "building" && kind) {
-    const value = decodeURIComponent(rest.join("/"));
-    loadBuilding(kind === "postal" ? { postal: value } : { unit_id: value });
-  }
-  if (name === "analyse") {
-    if (ANALYSE_SUBS.includes(kind)) state.analyseSub = kind;
-    showSubTab(state.analyseSub);
-    loadOnce(state.analyseSub);
+  if (tab === "building") {
+    if (kind) {
+      const value = decodeURIComponent(rest.join("/"));
+      loadBuilding(kind === "postal" ? { postal: value } : { unit_id: value });
+    }
+    window.scrollTo({ top: 0 });
   } else {
-    loadOnce(name);
+    loadOnce(tab);
+    jumpTo($(`#view-${tab}`));
   }
-  if (name === "map" && mapState.map) setTimeout(() => mapState.map.invalidateSize(), 50);
+}
+
+// Sections above the target may still be loading and growing, so keep the target
+// in place while the page settles, until the user scrolls themselves.
+function jumpTo(el) {
+  el.scrollIntoView({ block: "start" });
+  const done = new AbortController();
+  const resize = new ResizeObserver(() => el.scrollIntoView({ block: "start" }));
+  const stop = () => {
+    resize.disconnect();
+    done.abort();
+  };
+  resize.observe($("main"));
+  ["wheel", "touchstart", "keydown", "mousedown"].forEach((ev) =>
+    window.addEventListener(ev, stop, { passive: true, signal: done.signal })
+  );
+  setTimeout(stop, 4000);
+}
+
+// Sections load as they come near the screen.
+function watchSections() {
+  const lazy = new IntersectionObserver(
+    (entries) => entries.forEach((e) => e.isIntersecting && loadOnce(e.target.id.replace(/^view-/, ""))),
+    { rootMargin: "600px 0px" }
+  );
+  SECTIONS.forEach((name) => lazy.observe($(`#view-${name}`)));
+  const toTop = $("#to-top");
+  window.addEventListener("scroll", () => toTop.classList.toggle("show", window.scrollY > window.innerHeight), { passive: true });
+  toTop.addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
+}
+
+function syncHeaderHeight() {
+  document.documentElement.style.setProperty("--header-h", `${$(".topbar").offsetHeight}px`);
 }
 
 function openBlock(unitId) {
@@ -202,45 +223,10 @@ function openPostal(postal) {
 
 // ================= overview =================
 
-function renderHero(h) {
-  const stats = [
-    [h.transaction_count, "Resales recorded"],
-    [h.residential_blocks, "HDB blocks"],
-    [h.homes, "HDB homes"],
-    [h.towns, "Towns"],
-  ];
-  $("#hero").innerHTML = `
-    <div class="hero-stats">
-      ${stats.map(([v, label]) => `<div><div class="hero-num" data-count="${v}">0</div><div class="hero-label">${label}</div></div>`).join("")}
-      <div><div class="hero-num">${esc(h.month_max)}</div><div class="hero-label">Data snapshot · since ${esc(h.month_min.slice(0, 4))}</div></div>
-    </div>
-    <div class="hero-highlights">
-      <span>Priciest town: <b>${esc(titleCase(h.priciest_town.town))} · ${fmtMoney(h.priciest_town.median_price)} median</b></span>
-      <span>Busiest town: <b>${esc(titleCase(h.busiest_town.town))} · ${fmtNum(h.busiest_town.count)} resales</b></span>
-      <span>Tallest block: <a class="hero-link" data-unit="${esc(h.tallest.unit_id)}">${esc(blockLabel(h.tallest.unit_id))} · ${h.tallest.max_floor_lvl} storeys</a></span>
-      <img class="hero-otter otter-bob" src="/static/otter.svg" width="34" height="34" alt="">
-    </div>
-    <div class="hero-foot">
-      Contains information from data.gov.sg and OneMap, Singapore Land Authority · Town figures are medians of the last 12 months of resales ·
-      Estimates, not valuations · snapshot ${esc(h.month_max)}.
-    </div>`;
-  $("#hero .hero-link").addEventListener("click", (e) => openBlock(e.currentTarget.dataset.unit));
-
-  const start = performance.now();
-  const tick = (now) => {
-    const t = Math.min(1, (now - start) / 900);
-    const eased = 1 - (1 - t) ** 3;
-    $$("#hero [data-count]").forEach((el) => (el.textContent = Math.round(+el.dataset.count * eased).toLocaleString()));
-    if (t < 1) requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
-}
-
 async function loadOverview() {
   const data = await withLoading($("#overview-kpis"), api("/api/overview"));
   const { current: cur, previous: prev, record } = data;
-  renderHero(data.hero);
-  $("#overview-subtitle").textContent = `Last 12 months: ${fmtMonth(data.window.from)} – ${fmtMonth(data.window.to)}, compared with the 12 months before.`;
+  $("#overview-subtitle").textContent = `Last 12 months (${fmtMonth(data.window.from)} – ${fmtMonth(data.window.to)}) compared with the 12 months before. Latest data: ${fmtMonth(data.latest_month)}.`;
 
   $("#overview-kpis").innerHTML = `
     <div class="kpi hero">
@@ -548,7 +534,31 @@ function renderBuilding() {
 
   $("#building-content").innerHTML = `
     <div class="building-layout">
-      <div class="card flush">
+      <div class="card">
+        <h1 class="block-title">Blk ${esc(d.block)} ${esc(titleCase(d.street_name))}</h1>
+        <p class="block-sub">${esc(titleCase(d.town))}${geo?.postal_code ? ` · Singapore ${esc(geo.postal_code)}` : ""}</p>
+        <div class="badges">
+          ${d.listed ? "" : `<span class="tag grey">Not in current HDB register (likely redeveloped)</span>`}
+          ${info.year_completed ? `<span class="tag">Built ${info.year_completed}</span>` : ""}
+          ${info.max_floor_lvl ? `<span class="tag">${info.max_floor_lvl} storeys</span>` : ""}
+          ${info.total_dwelling_units ? `<span class="tag">${info.total_dwelling_units} homes</span>` : ""}
+          ${leaseLeft != null ? `<span class="tag">~${leaseLeft} yrs lease left</span>` : ""}
+          ${flags}
+        </div>
+        <div class="stat-row">
+          <div class="stat"><div class="label">Median price</div><div class="value">${fmtMoney(d.summary.median_price)}</div></div>
+          <div class="stat"><div class="label">Median $ psf</div><div class="value">${fmtPsf(d.summary.median_psf)}</div>
+            <div class="small muted">${psfVsTown == null ? "" : `${fmtPct(psfVsTown)} vs ${esc(titleCase(d.town))}`}</div></div>
+          <div class="stat"><div class="label">Resales</div><div class="value">${fmtNum(d.summary.count)}</div>
+            <div class="small muted">${d.period === "all" ? "all time" : `last ${d.period} yr${d.period === "1" ? "" : "s"}`}</div></div>
+        </div>
+        ${estimateLineHtml(d)}
+        ${unitMixHtml(info)}
+        ${geo ? `<p class="small" style="margin: 12px 0 0">
+          <a class="link" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${geo.latitude},${geo.longitude}">Google Maps ↗</a>
+          &nbsp;·&nbsp;<a class="link" target="_blank" rel="noopener" href="https://www.onemap.gov.sg/?lat=${geo.latitude}&lng=${geo.longitude}">OneMap ↗</a></p>` : ""}
+      </div>
+      <div class="card flush stage-card">
         <div class="stage">
           <div class="stage-controls">
             <div class="segmented" id="bld-period">
@@ -572,49 +582,26 @@ function renderBuilding() {
           <div class="legend" id="bld-legend"></div>
         </div>
       </div>
-      <div class="grid">
-        <div class="card">
-          <h1 class="block-title">Blk ${esc(d.block)} ${esc(titleCase(d.street_name))}</h1>
-          <p class="block-sub">${esc(titleCase(d.town))}${geo?.postal_code ? ` · Singapore ${esc(geo.postal_code)}` : ""}</p>
-          <div class="badges">
-            ${d.listed ? "" : `<span class="tag grey">Not in current HDB register (likely redeveloped)</span>`}
-            ${info.year_completed ? `<span class="tag">Built ${info.year_completed}</span>` : ""}
-            ${info.max_floor_lvl ? `<span class="tag">${info.max_floor_lvl} storeys</span>` : ""}
-            ${info.total_dwelling_units ? `<span class="tag">${info.total_dwelling_units} homes</span>` : ""}
-            ${leaseLeft != null ? `<span class="tag">~${leaseLeft} yrs lease left</span>` : ""}
-            ${flags}
-          </div>
-          <div class="stat-row">
-            <div class="stat"><div class="label">Median price</div><div class="value">${fmtMoney(d.summary.median_price)}</div></div>
-            <div class="stat"><div class="label">Median $ psf</div><div class="value">${fmtPsf(d.summary.median_psf)}</div>
-              <div class="small muted">${psfVsTown == null ? "" : `${fmtPct(psfVsTown)} vs town`}</div></div>
-            <div class="stat"><div class="label">Resales</div><div class="value">${fmtNum(d.summary.count)}</div>
-              <div class="small muted">${d.period === "all" ? "all time" : `last ${d.period} yr${d.period === "1" ? "" : "s"}`}</div></div>
-          </div>
-          ${unitMixHtml(info)}
-          ${geo ? `<p class="small" style="margin: 12px 0 0">
-            <a class="link" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${geo.latitude},${geo.longitude}">Google Maps ↗</a>
-            &nbsp;·&nbsp;<a class="link" target="_blank" rel="noopener" href="https://www.onemap.gov.sg/?lat=${geo.latitude}&lng=${geo.longitude}">OneMap ↗</a></p>` : ""}
-        </div>
-        <div class="card flush">
-          <div class="card-head" style="padding: 18px 18px 0"><h3>Price per storey band</h3>
-            <span class="muted small">${d.hidden_band_count ? `${d.hidden_band_count} sales in older overlapping bands hidden` : ""}</span></div>
-          <div class="table-wrap"><table id="bld-bands"></table></div>
-        </div>
-        <div class="card">
-          <div class="card-head"><h3>Block median price by year</h3></div>
-          <div class="chart" style="height: 220px"><canvas id="chart-block-trend"></canvas></div>
-        </div>
+      <div class="card flush">
+        <div class="card-head" style="padding: 18px 18px 0"><h3>Price by floor</h3>
+          <span class="muted small">${d.hidden_band_count ? `${d.hidden_band_count} sales in older overlapping bands hidden` : "Click a row to filter the sales below"}</span></div>
+        <div class="table-wrap"><table id="bld-bands"></table></div>
       </div>
-    </div>
-    <div class="grid cols-2" style="margin-top: 16px">
       <div class="card flush">
         <div class="card-head" style="padding: 18px 18px 0"><h3 id="bld-recent-title">Recent resales</h3>
           <button class="btn ghost" id="bld-clear-band" style="display:none">Show all floors</button></div>
-        <div class="table-wrap" style="max-height: 420px; overflow-y: auto"><table id="bld-recent"></table></div>
+        <div class="table-wrap" style="max-height: 380px; overflow-y: auto"><table id="bld-recent"></table></div>
+      </div>
+      ${valueCardHtml(d)}
+      <div class="card" id="bld-payment"></div>
+      <div class="card" id="bld-places"></div>
+      <div class="card" id="bld-liv"></div>
+      <div class="card">
+        <div class="card-head"><h3>This block's median price by year</h3></div>
+        <div class="chart" style="height: 220px"><canvas id="chart-block-trend"></canvas></div>
       </div>
       <div class="card">
-        <h3>Nearby blocks</h3>
+        <h3>Blocks next door</h3>
         <div class="chips" id="bld-nearby">${
           d.nearby.length
             ? d.nearby.map((n) => `<button class="chip" data-unit="${esc(n.unit_id)}">${esc(blockLabel(n.unit_id))} <span class="muted">${n.distance_m}m</span></button>`).join("")
@@ -626,9 +613,11 @@ function renderBuilding() {
           <tbody>${d.type_mix.map((t) => `<tr><td>${esc(titleCase(t.flat_type))}</td><td class="num">${fmtNum(t.count)}</td><td class="num">${fmtFull(t.median_price)}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">No resales on record yet</td></tr>`}</tbody>
         </table></div>
       </div>
-    </div>
-    <div class="card" id="bld-liv" style="margin-top: 16px"></div>`;
+    </div>`;
   renderBlockLivability(d);
+  renderPlaces(d);
+  renderPayment(d, leaseLeft);
+  if (geo) focusMap(+geo.latitude, +geo.longitude);
 
   bindSegmented("#bld-period", (v) => {
     building.period = v;
@@ -658,6 +647,8 @@ function renderBuilding() {
     if (chip) openBlock(chip.dataset.unit);
   });
   $("#bld-clear-band").addEventListener("click", () => selectBand(null));
+  $$("[data-go-model]").forEach((a) => a.addEventListener("click", () => go("#model")));
+  $$("[data-go-value]").forEach((a) => a.addEventListener("click", () => $("#bld-value").scrollIntoView({ behavior: "smooth", block: "start" })));
 
   drawBuildingSvg();
   renderBandTable();
@@ -683,6 +674,206 @@ function renderBuilding() {
       plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${fmtFull(c.parsed.y)} (${d.yearly[c.dataIndex].count} sales)` } } },
       scales: { y: moneyAxis },
     },
+  });
+}
+
+// The model's estimates grouped by flat type, each with its floor bands low to high and the middle one picked out.
+function estimatesByType(d) {
+  const p = d.prediction;
+  if (!p) return [];
+  const byType = {};
+  p.rows.forEach((r) => (byType[r.flat_type] = byType[r.flat_type] || []).push(r));
+  return Object.entries(byType).map(([type, bands]) => ({
+    type,
+    bands,
+    mid: bands[Math.floor((bands.length - 1) / 2)],
+    low: bands[0],
+    high: bands[bands.length - 1],
+    recent: p.recent[type],
+  }));
+}
+
+function estimateLineHtml(d) {
+  const est = estimatesByType(d);
+  if (!est.length) return "";
+  return `<p class="estimate-line">Estimated today: ${est
+    .map((e) => `<span><b>${esc(TYPE_LABELS[e.type] || titleCase(e.type))}</b> ${fmtMoney(e.mid.pred_price)}</span>`)
+    .join("")}<a class="link small" data-go-value>Details ↓</a></p>`;
+}
+
+// What the block's usual flat of each type is worth now, how floor changes it, and how real sales here compare.
+function valueCardHtml(d) {
+  const est = estimatesByType(d);
+  if (!est.length) return "";
+  const p = d.prediction;
+  const rows = est
+    .map(({ type, bands, mid, low, high, recent }) => {
+      const vs = recent ? recent.vs_model : null;
+      const verdict =
+        vs == null ? "" : Math.abs(vs) < 0.02 ? "in line with estimate" : `${(Math.abs(vs) * 100).toFixed(0)}% ${vs > 0 ? "above" : "below"} estimate`;
+      return `<tr>
+        <td><b>${esc(titleCase(type))}</b><div class="muted small">${Math.round(mid.floor_area_sqm)} sqm · ${esc(mid.flat_model)}</div></td>
+        <td class="num"><b class="price value-big">${fmtMoney(mid.pred_price)}</b><div class="muted small">${fmtMoney(mid.pred_low)} – ${fmtMoney(mid.pred_high)}</div></td>
+        <td class="num small">${bands.length > 1 ? `${fmtMoney(low.pred_price)} → ${fmtMoney(high.pred_price)}` : "–"}
+          <div class="muted small">${bands.length > 1 ? `floor ${low.storey_low} → ${high.storey_high}` : ""}</div></td>
+        <td class="num small">${
+          recent
+            ? `${fmtMoney(recent.median_price)} <span class="muted">· ${recent.count} sold</span><div class="${vs > 0.02 ? "above" : vs < -0.02 ? "below" : "muted"}">${verdict}</div>`
+            : `<span class="muted">none</span>`
+        }</td></tr>`;
+    })
+    .join("");
+  return `<div class="card flush" id="bld-value">
+    <div class="card-head" style="padding: 18px 18px 0">
+      <h3>What's it worth today?</h3>
+      <a class="link small" data-go-model>How estimates work →</a>
+    </div>
+    <p class="muted small" style="margin: 6px 18px 10px; line-height: 1.6">Estimated price of this block's usual flat of each type on a
+      middle floor, at ${fmtMonth(p.month)} prices. Most sales land inside the range shown; typical miss is about
+      ±${(p.mape * 100).toFixed(0)}%. Renovation, facing and view can move a flat's price beyond it.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Type</th><th class="num">Estimate</th><th class="num">Low → high floor</th><th class="num">Sold here, last 12 mo</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+  </div>`;
+}
+
+// ----- monthly payment -----
+
+const LOANS = {
+  hdb: { label: "HDB", rate: 2.6, maxYears: 25, note: "With an HDB loan the 25% downpayment can come entirely from CPF." },
+  bank: { label: "Bank", rate: 3.0, maxYears: 30, note: "With a bank loan at least 5% of the price must be cash; the other 20% can be CPF." },
+};
+const LOAN_TO_VALUE = 0.75;
+const LEASE_TO_AGE = 95; // full loan and CPF use need the lease to last until the youngest buyer is 95
+
+const monthlyPayment = (principal, ratePct, years) => {
+  const r = ratePct / 100 / 12;
+  const n = years * 12;
+  return r ? (principal * r) / (1 - (1 + r) ** -n) : principal / n;
+};
+
+function renderPayment(d, leaseLeft) {
+  const box = $("#bld-payment");
+  const est = estimatesByType(d);
+  const usual = est.find((e) => e.type === "4 ROOM") || est[0];
+  const pay = { price: Math.round((usual ? usual.mid.pred_price : d.summary.median_price || 500000) / 1000) * 1000, loan: "hdb" };
+  const youngest = leaseLeft != null ? LEASE_TO_AGE - leaseLeft : null;
+
+  box.innerHTML = `
+    <div class="card-head"><h3>Monthly payment</h3><span class="muted small">Indicative only</span></div>
+    ${est.length ? `<div class="chips" id="pay-types" style="margin-bottom: 12px">${est
+      .map((e) => `<button class="chip ${e === usual ? "active" : ""}" data-price="${Math.round(e.mid.pred_price / 1000) * 1000}">${esc(titleCase(e.type))} · ${fmtMoney(e.mid.pred_price)}</button>`)
+      .join("")}</div>` : ""}
+    <div class="pay-grid">
+      <label class="field">Price<input type="number" id="pay-price" step="5000" min="0" value="${pay.price}" /></label>
+      <label class="field">Loan<div class="segmented" id="pay-loan">${Object.entries(LOANS)
+        .map(([k, l]) => `<button type="button" data-value="${k}" class="${k === pay.loan ? "active" : ""}">${l.label}</button>`)
+        .join("")}</div></label>
+      <label class="field">Interest % a year<input type="number" id="pay-rate" step="0.05" min="0" value="${LOANS[pay.loan].rate}" /></label>
+      <label class="field">Years<input type="number" id="pay-years" step="1" min="5" max="30" value="25" /></label>
+    </div>
+    <div class="pay-result" id="pay-result"></div>
+    ${
+      youngest != null && youngest > 21
+        ? `<p class="small lease-note">With ~${leaseLeft} years of lease left, buyers need the youngest to be <b>${youngest} or older</b>
+            for the full loan and full CPF use. Younger buyers get a smaller loan and can use less CPF.</p>`
+        : ""
+    }`;
+
+  const update = () => {
+    const loan = LOANS[pay.loan];
+    const price = +$("#pay-price").value || 0;
+    const years = Math.min(loan.maxYears, Math.max(1, +$("#pay-years").value || loan.maxYears));
+    const principal = price * LOAN_TO_VALUE;
+    $("#pay-result").innerHTML = `
+      <div><div class="label">Monthly</div><div class="value">${fmtFull(monthlyPayment(principal, +$("#pay-rate").value || 0, years))}</div>
+        <div class="small muted">over ${years} years</div></div>
+      <div><div class="label">Loan (75%)</div><div class="value">${fmtMoney(principal)}</div></div>
+      <div><div class="label">Downpayment (25%)</div><div class="value">${fmtMoney(price - principal)}</div></div>
+      <p class="small muted" style="grid-column: 1 / -1; margin: 0">${loan.note} ${loan.label} loans run up to ${loan.maxYears} years.
+        Excludes stamp duty, legal fees and grants.</p>`;
+  };
+  bindSegmented("#pay-loan", (v) => {
+    pay.loan = v;
+    $("#pay-rate").value = LOANS[v].rate;
+    $("#pay-years").value = Math.min(+$("#pay-years").value || 25, LOANS[v].maxYears);
+    update();
+  });
+  $("#pay-types")?.addEventListener("click", (e) => {
+    const chip = e.target.closest("[data-price]");
+    if (!chip) return;
+    $$("#pay-types .chip").forEach((c) => c.classList.toggle("active", c === chip));
+    $("#pay-price").value = chip.dataset.price;
+    update();
+  });
+  ["#pay-price", "#pay-rate", "#pay-years"].forEach((sel) => $(sel).addEventListener("input", update));
+  update();
+}
+
+// ----- what's nearby -----
+
+const POI_KINDS = {
+  mrt: { label: "MRT / LRT stations", icon: "🚇", color: "#0e5c62" },
+  hawker: { label: "Hawker centres", icon: "🍜", color: "#d9480f" },
+  food_court: { label: "Food courts & coffee shops", icon: "🍱", color: "#e67700" },
+  supermarket: { label: "Supermarkets", icon: "🛒", color: "#2b8a3e" },
+  mall: { label: "Malls", icon: "🛍️", color: "#9c36b5" },
+  primary_school: { label: "Primary schools", icon: "🏫", color: "#1971c2" },
+  park: { label: "Parks", icon: "🌳", color: "#5c940d" },
+  polyclinic: { label: "Polyclinics", icon: "🩺", color: "#c2255c" },
+  hospital: { label: "Hospitals", icon: "🏥", color: "#c2255c" },
+};
+
+const fmtWalk = (p) => (p.distance_m <= 2000 ? `${p.walk_min} min walk` : fmtDist(p.distance_m));
+
+function placeItem(id, name, meta, dist) {
+  return `<li class="poi-item ${id != null ? "linked" : ""}" ${id != null ? `data-poi="${id}"` : ""}>
+    <span class="poi-name">${name}${meta ? ` <span class="muted">· ${meta}</span>` : ""}</span><span class="poi-dist">${dist}</span></li>`;
+}
+
+function placeGroup(kind, items, empty, label = POI_KINDS[kind].label) {
+  const k = POI_KINDS[kind];
+  return `<div class="poi-group"><h4><span class="poi-dot" style="background:${k.color}">${k.icon}</span>${label}</h4>
+    <ul>${items.join("") || `<li class="muted small">${empty}</li>`}</ul></div>`;
+}
+
+function renderPlaces(d) {
+  const box = $("#bld-places");
+  const a = d.amenities || {};
+  const lv = d.livability;
+  if (!Object.keys(a).length && !lv) {
+    box.style.display = "none";
+    return;
+  }
+  // School and park names come in capitals from MOE and NParks.
+  const named = (kind, name) => (kind === "primary_school" || kind === "park" ? titleCase(name) : name);
+  const list = (kind, meta = () => "") => (a[kind] || []).map((p) => placeItem(p.id, esc(named(kind, p.name)), meta(p), fmtWalk(p)));
+  const stations = nearbyStations(lv).map((st) => {
+    const how = st.how === "walk" ? "walk" : st.how.replace("bus", "by bus");
+    return placeItem(esc(`mrt|${st.station}`), `${esc(stationName(st.station))} ${lineChips(st.lines)}`, "", `${fmtMin(st.min)} ${esc(how)}`);
+  });
+  const schools = list("primary_school", (p) => (p.distance_m <= 1000 ? `<span class="tag">within 1 km</span>` : ""));
+  const health = [...list("polyclinic"), ...list("hospital")];
+  if (lv?.nearest_gp) health.unshift(placeItem(null, esc(titleCase(lv.nearest_gp)), "nearest GP", fmtDist(lv.nearest_gp_m)));
+
+  box.innerHTML = `
+    <div class="card-head"><h3>What's nearby</h3><span class="muted small">Click a place to see it on the map</span></div>
+    <div class="poi-groups">
+      ${placeGroup("mrt", stations, "No station within 15 min")}
+      ${placeGroup("hawker", list("hawker", (p) => (p.detail?.stalls ? `${p.detail.stalls} stalls` : "")), "None within 1.5 km")}
+      ${placeGroup("supermarket", list("supermarket"), "None within 1.5 km")}
+      ${placeGroup("food_court", list("food_court"), "None mapped within 1 km")}
+      ${placeGroup("mall", list("mall"), "None within 3 km")}
+      ${placeGroup("primary_school", schools, "None within 2 km")}
+      ${placeGroup("park", list("park"), "None within 1.5 km")}
+      ${placeGroup("polyclinic", health, "–", "Healthcare")}
+    </div>
+    <p class="muted small" style="margin: 12px 0 0">Walking times are straight-line distance plus 30% for real paths. Primary schools within 1 km
+      get priority in P1 registration. Food courts, supermarkets and malls come from OpenStreetMap and may miss a few.</p>`;
+  box.addEventListener("click", (e) => {
+    const item = e.target.closest("[data-poi]");
+    if (item) focusPoi(item.dataset.poi);
   });
 }
 
@@ -729,11 +920,19 @@ const SCENE_W = 560;
 const SIGN_TEAL = "#0e5c62";
 const SIGN_YELLOW = "#f2c230";
 
+const LRT_LINES = new Set(["BPLRT", "SKLRT", "PGLRT"]);
+const isLrtOnly = (st) => {
+  const lines = (st.lines || "").split(",").filter(Boolean);
+  return lines.length > 0 && lines.every((g) => LRT_LINES.has(g));
+};
+
+// Stations within 15 min, fastest first; of the LRT-only stops just the closest is kept.
 function nearbyStations(lv) {
   if (!lv) return [];
   try {
     const list = JSON.parse(lv.stations_15min || "[]");
-    if (list.length) return list;
+    const firstLrt = list.find(isLrtOnly);
+    if (list.length) return list.filter((st) => !isLrtOnly(st) || st === firstLrt);
   } catch {
     // fall through to the single fastest station
   }
@@ -808,21 +1007,104 @@ function mrtEntranceSvg(st) {
     }`;
 }
 
-// Slim column beside the building: one small entrance per station within 15 min, captioned in HTML.
-function mrtColumnHtml(stations) {
+const WIDE_SCENE_W = 1100;
+const STATION_SLOT = 128;
+const STATION_DRAW_W = 108;
+const LABEL_ROOM = 215; // band price labels to the right of the building
+
+// Stations west of the block go to its left, east to its right, nearest first.
+function splitStationsByDirection(stations, homeLon) {
+  const sides = { left: [], right: [] };
+  stations.forEach((st) => sides[homeLon != null && st.lon != null && st.lon < homeLon ? "left" : "right"].push(st));
+  return sides;
+}
+
+// Narrow screens: a row of small captioned entrances under the scene.
+function mrtRowHtml(stations) {
   const items = stations
     .map((st, i) => {
-      const name = stationName(st.station);
       const how = st.how === "walk" ? `walk${st.exit ? ` · ${st.exit}` : ""}` : st.how.replace("bus", "by bus");
-      const detail = `${fmtMin(st.min)} ${how}`;
-      return `<div class="mrt-item" title="${esc(name)} · ${esc(detail)}${st.walk_m ? ` · ${st.walk_m} m` : ""}">
+      return `<div class="mrt-item">
         <svg viewBox="-10 -96 ${STATION_ICON_W + 20} 100" aria-hidden="true">${mrtEntranceSvg(st)}</svg>
-        <div class="mrt-name ${i === 0 ? "first" : ""}">${esc(name)}</div>
-        <div class="mrt-detail">${esc(detail)}</div>
+        <div class="mrt-name ${i === 0 ? "first" : ""}">${esc(stationName(st.station))}</div>
+        <div class="mrt-detail">${esc(`${fmtMin(st.min)} ${how}`)}</div>
       </div>`;
     })
     .join("");
-  return `<div class="mrt-col"><div class="mrt-col-title">MRT ≤ 15 min</div>${items}</div>`;
+  return `<div class="mrt-row">${items}</div>`;
+}
+
+// A small walker or bus heading right, feet/wheels at y=0. `flip` keeps the bus number readable when mirrored.
+function commuterSvg(st, flip) {
+  if (st.how === "walk") {
+    // Otter waddling on all fours, side on.
+    const leg = (x, alt) =>
+      `<line class="limb ${alt ? "alt" : ""}" x1="${x}" y1="-4.5" x2="${x}" y2="0" stroke="${OTTER.dark}" stroke-width="2.2" stroke-linecap="round"/>`;
+    return `<g class="otter-waddle">
+      <path d="M-8 -6 Q-14 -6 -17 -2" stroke="${OTTER.fur}" stroke-width="3" fill="none" stroke-linecap="round"/>
+      ${leg(-5, true)}${leg(5, false)}
+      <ellipse cx="0" cy="-7" rx="10" ry="4.8" fill="${OTTER.fur}"/>
+      <ellipse cx="1" cy="-5" rx="7" ry="2.2" fill="${OTTER.belly}"/>
+      ${leg(-3, false)}${leg(7, true)}
+      <circle cx="9.5" cy="-10.5" r="4.6" fill="${OTTER.fur}"/>
+      <circle cx="7.5" cy="-14.6" r="1.3" fill="${OTTER.fur}"/>
+      <ellipse cx="12.4" cy="-9.4" rx="2.6" ry="1.9" fill="${OTTER.belly}"/>
+      <ellipse cx="14.3" cy="-10" rx="1" ry="0.8" fill="${OTTER.ink}"/>
+      <circle cx="10.8" cy="-11.8" r="0.9" fill="${OTTER.ink}"/>
+      <path d="M12.5 -9 l4 -0.8 M12.5 -8.3 l4 0.4" stroke="${OTTER.dark}" stroke-width="0.4"/>
+    </g>`;
+  }
+  // Otter head peering out of a bus window.
+  const passenger = (x) => `<circle cx="${x}" cy="-11.6" r="2.4" fill="${OTTER.fur}"/>
+    <circle cx="${x - 1.9}" cy="-13.6" r="0.8" fill="${OTTER.fur}"/><circle cx="${x + 1.9}" cy="-13.6" r="0.8" fill="${OTTER.fur}"/>
+    <ellipse cx="${x}" cy="-10.7" rx="1.4" ry="0.9" fill="${OTTER.belly}"/>
+    <circle cx="${x - 0.9}" cy="-12.2" r="0.45" fill="${OTTER.ink}"/><circle cx="${x + 0.9}" cy="-12.2" r="0.45" fill="${OTTER.ink}"/>`;
+  const service = st.how.replace(/^bus\s*/, "");
+  return `<g class="bus-body">
+      <rect x="-17" y="-17" width="34" height="14" rx="3" fill="#5aa641"/>
+      <rect x="-17" y="-7" width="34" height="3" fill="#3f8a2c"/>
+      ${[-14, -7, 0, 7].map((x) => `<rect x="${x}" y="-15" width="5.5" height="5" rx="1" fill="#e8f6ff"/>`).join("")}
+      <svg x="-14" y="-15" width="26.5" height="5" viewBox="-14 -15 26.5 5" overflow="hidden">${passenger(-4.25)}${passenger(9.75)}</svg>
+      <rect x="13" y="-15" width="3" height="8" rx="1" fill="#e8f6ff"/>
+      ${service ? `<g transform="scale(${flip ? -1 : 1},1)">
+        <rect x="${-Math.max(10, service.length * 5 + 4) / 2}" y="-23" width="${Math.max(10, service.length * 5 + 4)}" height="6.5" rx="1.5" fill="#1f1a1b"/>
+        <text x="0" y="-18" font-size="5.5" font-weight="800" fill="#ffd34d" text-anchor="middle">${esc(service)}</text>
+      </g>` : ""}
+    </g>
+    <circle cx="-9" cy="-2.5" r="3" fill="#1f1a1b"/><circle cx="9" cy="-2.5" r="3" fill="#1f1a1b"/>`;
+}
+
+// Entrances standing on the grass line, captioned on the grass beneath; centres are given per station.
+// A walker or bus loops from the block to each station, at a pace set by the mode.
+function mrtOnGrassSvg(placed, groundY) {
+  const scale = STATION_DRAW_W / STATION_ICON_W;
+  const commuters = placed
+    .map(({ st, cx, fromX }, i) => {
+      const dx = cx - fromX;
+      const secs = Math.abs(dx) / (st.how === "walk" ? 45 : 110) + 1;
+      return `<g transform="translate(${fromX.toFixed(1)},${groundY + 1})" pointer-events="none">
+        <g class="commuter" style="--dx:${dx.toFixed(1)}px;animation-duration:${secs.toFixed(1)}s;animation-delay:${(i * 0.9).toFixed(1)}s">
+          <g transform="scale(${dx < 0 ? -1 : 1},1)">${commuterSvg(st, dx < 0)}</g>
+        </g>
+      </g>`;
+    })
+    .join("");
+  const entrances = placed
+    .map(({ st, cx, first }) => {
+      const name = stationName(st.station);
+      const how = st.how === "walk" ? `walk${st.exit ? ` · ${st.exit}` : ""}` : st.how.replace("bus", "by bus");
+      const detail = `${fmtMin(st.min)} ${how}`;
+      const nameSize = Math.min(11.5, (STATION_SLOT - 8) / Math.max(1, name.length * 0.62));
+      return `<g>
+        <title>${esc(name)} · ${esc(detail)}${st.walk_m ? ` · ${st.walk_m} m` : ""}</title>
+        <g transform="translate(${(cx - STATION_DRAW_W / 2).toFixed(1)},${groundY}) scale(${scale.toFixed(3)})">${mrtEntranceSvg(st)}</g>
+        <text x="${cx.toFixed(1)}" y="${groundY + 15}" font-size="${nameSize.toFixed(1)}" font-weight="800" fill="${first ? "#8b0a1f" : "#1f1a1b"}" text-anchor="middle">${esc(name)}</text>
+        <text x="${cx.toFixed(1)}" y="${groundY + 27}" font-size="9.5" font-weight="600" fill="#6f6466" text-anchor="middle">${esc(detail)}</text>
+      </g>`;
+    })
+    .join("");
+  // Commuters go on top so ones passing a nearer station stay visible.
+  return entrances + commuters;
 }
 
 // Spread the block's unit mix across one floor's worth of columns (largest-remainder rounding).
@@ -885,8 +1167,18 @@ function drawBuildingSvg() {
   const stations = nearbyStations(d.livability);
   const floorH = Math.max(8, Math.min(26, Math.floor(470 / floors)));
   const bw = split ? Math.max(210, Math.min(260, groups.reduce((s, g) => s + g.cols, 0) * 22)) : 210;
-  const bx = split ? 140 - (bw - 210) / 2 : 150;
-  const W = SCENE_W;
+  // On wide screens the scene widens into a panorama so nearby stations stand either side of the block;
+  // narrow screens keep the compact scene and list the stations in a row beneath it.
+  const wide = $("#bld-svg").clientWidth >= 760;
+  const sides = wide ? splitStationsByDirection(stations, d.livability?.longitude) : { left: [], right: [] };
+  const baseX = (split ? 140 - (bw - 210) / 2 : 150) + sides.left.length * STATION_SLOT;
+  const needW = Math.max(SCENE_W, baseX + bw + LABEL_ROOM + sides.right.length * STATION_SLOT + 10);
+  const W = Math.max(needW, wide ? WIDE_SCENE_W : 0);
+  const bx = baseX + (W - needW) / 2;
+  const placedStations = [
+    ...sides.left.map((st, i) => ({ st, fromX: bx - 6, cx: bx - 125 - STATION_SLOT / 2 - i * STATION_SLOT })),
+    ...sides.right.map((st, i) => ({ st, fromX: bx + bw + 6, cx: bx + bw + LABEL_ROOM + STATION_SLOT / 2 + i * STATION_SLOT })),
+  ].map((p) => ({ ...p, first: p.st === stations[0] }));
   const roofSpace = 78;
   const voidH = 24;
   const groundH = split ? 56 : 46;
@@ -1059,7 +1351,7 @@ function drawBuildingSvg() {
     <path d="M20 ${canalY + 8} q6 -3 12 0 M150 ${canalY + 9} q6 -3 12 0 M300 ${canalY + 7} q6 -3 12 0" stroke="#fff" stroke-width="1.2" fill="none"/>
     ${floatingOtter(W - 96, canalY + 9, 1.25)}`;
 
-  $("#bld-svg").innerHTML = `<div class="scene-row"><div class="scene-main">
+  $("#bld-svg").innerHTML = `
   <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Building with price by storey band${split ? " and unit type" : ""}">
     <circle cx="${W - 70}" cy="54" r="26" fill="#ffd0d6"/><circle cx="${W - 70}" cy="54" r="17" fill="#ffb3bc"/>
     <g class="cloud"><ellipse cx="80" cy="46" rx="34" ry="11" fill="#fff"/><ellipse cx="100" cy="38" rx="20" ry="12" fill="#fff"/></g>
@@ -1089,11 +1381,12 @@ function drawBuildingSvg() {
 
     ${tree(bx - 48, 1)}${tree(bx - 92, 0.75)}${tree(bx + bw + 40, 0.9)}${tree(bx + bw + 84, 0.7)}
     ${otters}
+    ${mrtOnGrassSvg(placedStations, groundY)}
     ${columnLabels}
     ${floorNums}
     ${labels}
     ${bands.length ? "" : `<text x="${bx + bw / 2}" y="${floorTop(Math.ceil(floors / 2))}" text-anchor="middle" font-size="13" font-weight="700" fill="#8b0a1f">No resales in this period</text>`}
-  </svg></div>${stations.length ? mrtColumnHtml(stations) : ""}</div>`;
+  </svg>${wide || !stations.length ? "" : mrtRowHtml(stations)}`;
   building.noAnim = false;
 
   const fmt = building.metric === "psf" ? (v) => `${fmtPsf(v)} psf` : fmtMoney;
@@ -1534,15 +1827,6 @@ async function loadInsightsData() {
 
   const barOpts = (fmt) => ({ plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => fmt(c.parsed.y ?? c.parsed.x) } } } });
 
-  drawChart("chart-lease", {
-    type: "line",
-    data: {
-      labels: d.lease_decay.map((r) => `${r.lease_bucket}–${r.lease_bucket + 4} yrs`),
-      datasets: [{ data: d.lease_decay.map((r) => r.median_psf), borderColor: "#c8102e", backgroundColor: "rgba(200,16,46,0.08)", fill: true, tension: 0.3, pointRadius: 3 }],
-    },
-    options: { ...barOpts(fmtPsf), scales: { y: psfAxis, x: { title: { display: true, text: "Remaining lease at sale" } } } },
-  });
-
   drawChart("chart-storey", {
     type: "bar",
     data: {
@@ -1561,32 +1845,6 @@ async function loadInsightsData() {
     options: { ...barOpts(fmtPsf), indexAxis: "y", scales: { x: psfAxis } },
   });
 
-  drawChart("chart-age", {
-    data: {
-      labels: d.by_age.map((r) => `${r.age_bucket}–${r.age_bucket + 4}`),
-      datasets: [
-        { type: "bar", label: "Median price", data: d.by_age.map((r) => r.median_price), backgroundColor: "#f8c5cb", borderRadius: 4, yAxisID: "y" },
-        { type: "line", label: "Median sqm", data: d.by_age.map((r) => r.median_area), borderColor: "#1f1a1b", backgroundColor: "#1f1a1b", yAxisID: "y1", tension: 0.3, pointRadius: 2 },
-      ],
-    },
-    options: {
-      scales: {
-        y: moneyAxis,
-        y1: { position: "right", grid: { drawOnChartArea: false }, ticks: { callback: (v) => `${v} sqm` } },
-        x: { title: { display: true, text: "Flat age at sale (years)" } },
-      },
-    },
-  });
-
-  drawChart("chart-season", {
-    type: "bar",
-    data: {
-      labels: d.seasonality.map((r) => ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][r.month_num - 1]),
-      datasets: [{ data: d.seasonality.map((r) => r.avg_count), backgroundColor: "#f26b7a", hoverBackgroundColor: "#c8102e", borderRadius: 4 }],
-    },
-    options: { ...barOpts(fmtNum), plugins: { legend: { display: false }, subtitle: { display: true, text: "All flat types, last 10 years" } } },
-  });
-
   const blockTable = (rows, extra) => `
     <thead><tr><th>#</th><th>Block</th><th>Town</th><th class="num">$ psf</th><th class="num">Median</th>${extra ? `<th class="num">Lease left</th>` : ""}<th class="num">Sales</th></tr></thead>
     <tbody>${rows
@@ -1600,154 +1858,56 @@ async function loadInsightsData() {
   $("#table-value").innerHTML = blockTable(d.best_value, true);
 }
 
-// ================= correlations =================
+// ================= model =================
 
-const corr = { data: null, group: "score" };
-
-function corrColor(r) {
-  if (r == null) return "#f3efef";
-  const [R, G, B] = r >= 0 ? [200, 16, 46] : [47, 109, 181];
-  return `rgba(${R},${G},${B},${(0.06 + 0.88 * Math.min(1, Math.abs(r))).toFixed(2)})`;
-}
-
-const fmtRho = (r) => (r == null ? "–" : `${r < 0 ? "−" : ""}${Math.abs(r).toFixed(2)}`);
-const rhoStrength = (r) => {
-  const a = Math.abs(r ?? 0);
-  return a < 0.1 ? "negligible" : a < 0.3 ? "weak" : a < 0.5 ? "moderate" : "strong";
-};
-
-async function loadCorrelations() {
-  const d = (corr.data = await withLoading($("#view-correlations"), api("/api/correlations")));
-  if (!d.factors.length) {
-    $("#corr-subtitle").textContent = "Livability scores haven't been built yet. Run build_livability.py, then reload.";
+async function loadModel() {
+  const m = await withLoading($("#model-kpis"), api("/api/model"));
+  if (!m.summary) {
+    $("#model-subtitle").textContent = "The model hasn't been trained yet. Run build_price_model.py, then reload.";
     return;
   }
-  $("#corr-subtitle").textContent = `${fmtNum(d.blocks)} scored HDB blocks, ${fmtNum(d.priced_blocks)} with resales in the last 3 years. Correlation shows what moves together, not what causes what.`;
+  const s = m.summary;
+  const mm = s.model;
+  const pct = (v, digits = 0) => `${(v * 100).toFixed(digits)}%`;
+  $("#model-subtitle").textContent = `Learned from ${fmtNum(s.n_total)} resales (${fmtMonth(s.window.from)} – ${fmtMonth(s.window.to)}), then checked against ${fmtNum(s.n_test)} newer sales it hadn't seen.`;
 
-  drawChart("chart-drivers", {
+  $("#model-kpis").innerHTML = `
+    <div class="kpi hero"><div class="label">Typical miss</div><div class="value">±${pct(mm.mape, 1)}</div>
+      <div class="sub">vs ±${pct(s.baseline.mape, 1)} using the town's median price</div></div>
+    <div class="kpi"><div class="label">Within 5% of the real price</div><div class="value">${pct(mm.within_5pct)}</div><div class="sub">of sales</div></div>
+    <div class="kpi"><div class="label">Within 10%</div><div class="value">${pct(mm.within_10pct)}</div><div class="sub">of sales</div></div>
+    <div class="kpi"><div class="label">Inside the estimate range</div><div class="value">${pct(mm.interval_coverage)}</div><div class="sub">of sales</div></div>`;
+
+  drawChart("chart-model-importance", {
     type: "bar",
     data: {
-      labels: d.drivers.map((f) => f.label),
-      datasets: [
-        { label: "Within the same town", data: d.drivers.map((f) => f.within_town), backgroundColor: "#c8102e", borderRadius: 3 },
-        { label: "Across Singapore", data: d.drivers.map((f) => f.overall), backgroundColor: "#f4a3ab", borderRadius: 3 },
-      ],
+      labels: m.importance.map((r) => r.factor),
+      datasets: [{ data: m.importance.map((r) => r.share * 100), backgroundColor: m.importance.map((_, i, a) => colorScale(1 - i / Math.max(1, a.length - 1))), borderRadius: 4 }],
     },
     options: {
       indexAxis: "y",
-      interaction: { mode: "index", intersect: false, axis: "y" },
-      scales: { x: { suggestedMin: -0.6, suggestedMax: 0.6, title: { display: true, text: "Spearman ρ with $ psf" } } },
-      plugins: { tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ρ = ${fmtRho(c.parsed.x)}` } } },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.parsed.x.toFixed(0)}% of what the model relies on` } } },
+      scales: { x: { ticks: { callback: (v) => `${v}%` } } },
     },
   });
 
-  bindSegmented("#corr-group", (g) => {
-    corr.group = g;
-    renderCorrMatrix();
-  });
-  renderCorrMatrix();
+  $("#model-method").innerHTML = `
+    <p style="margin-top:0"><b>What it learns from.</b> Every HDB resale in the last 3 years: the flat's type, model, size, floor
+      and lease left, and the block's location, MRT and bus access, CBD commute, nearby food, clinics, parks and schools.</p>
+    <p><b>How we check it.</b> It learns only from sales before ${fmtMonth(s.test_from)}, then prices the ${fmtNum(s.n_test)} sales
+      since. Its typical miss is ±${pct(mm.mape, 1)}, against ±${pct(s.baseline.mape, 1)} if you just used the town's median
+      price for that flat type.</p>
+    <p><b>The range.</b> Each estimate comes with a low–high range that ${pct(mm.interval_coverage)} of real sales fell inside.</p>
+    <p><b>Block estimates.</b> For each block, it prices the block's usual flat of each type on every floor band, at
+      ${fmtMonth(s.predicted_month)} prices.</p>
+    <p style="margin-bottom:0"><b>What it can't see.</b> Renovation, facing, view, noise or the exact unit, so a particular flat can
+      sell well above or below. It also doesn't forecast. Treat it as a reference point, not a valuation.</p>`;
 
-  const options = d.factors.map((f) => `<option value="${esc(f.key)}">${esc(f.label)}</option>`).join("");
-  $("#corr-x").innerHTML = options;
-  $("#corr-y").innerHTML = options;
-  $("#corr-x").value = "cbd_min";
-  $("#corr-y").value = "median_psf";
-  fillSelect($("#corr-town"), state.meta.towns.filter((t) => t !== "LIM CHU KANG"));
-  ["#corr-x", "#corr-y", "#corr-town"].forEach((sel) => $(sel).addEventListener("change", loadScatter));
-  $("#corr-matrix").addEventListener("click", (e) => {
-    const cell = e.target.closest("[data-x]");
-    if (!cell || cell.dataset.x === cell.dataset.y) return;
-    $("#corr-x").value = cell.dataset.x;
-    $("#corr-y").value = cell.dataset.y;
-    loadScatter();
-    $("#corr-scatter-card").scrollIntoView({ behavior: "smooth", block: "start" });
-  });
-  loadScatter();
-}
-
-function renderCorrMatrix() {
-  const d = corr.data;
-  const factors = d.factors.filter((f) => f.group === corr.group || f.key === "median_psf");
-  const short = (f) => f.label.replace(/ score$/, "").replace(/ \((m|min|years|block median)\)$/, "");
-  $("#corr-matrix").innerHTML = `
-    <thead><tr><th></th>${factors.map((f) => `<th class="corr-col" title="${esc(f.label)}"><span>${esc(short(f))}</span></th>`).join("")}</tr></thead>
-    <tbody>${factors
-      .map(
-        (row) => `<tr><th class="corr-row">${esc(row.label)}</th>${factors
-          .map((col) => {
-            const r = d.matrix[row.key][col.key];
-            const strong = r != null && Math.abs(r) > 0.5;
-            return `<td class="corr-cell ${row.key === col.key ? "diag" : ""}" data-x="${esc(col.key)}" data-y="${esc(row.key)}"
-              title="${esc(row.label)} vs ${esc(col.label)}: ρ = ${fmtRho(r)}"
-              style="background:${row.key === col.key ? "#f6f2f2" : corrColor(r)};color:${strong ? "#fff" : "var(--ink)"}">${row.key === col.key ? "" : fmtRho(r)}</td>`;
-          })
-          .join("")}</tr>`
-      )
+  $("#model-towns").innerHTML = `
+    <thead><tr><th>Town</th><th class="num">Typical miss</th><th class="num">Sales checked</th></tr></thead>
+    <tbody>${m.town_errors
+      .map((t) => `<tr><td>${esc(titleCase(t.town))}</td><td class="num"><b>±${pct(t.mape, 1)}</b></td><td class="num muted">${fmtNum(t.n)}</td></tr>`)
       .join("")}</tbody>`;
-}
-
-async function loadScatter() {
-  const x = $("#corr-x").value;
-  const y = $("#corr-y").value;
-  const town = $("#corr-town").value;
-  const d = await withLoading($("#corr-scatter-card"), api("/api/correlations/scatter", { x, y, town }));
-  const label = (key) => corr.data.factors.find((f) => f.key === key).label;
-  const xs = d.points.map((p) => p[0]);
-  const lo = Math.min(...xs);
-  const hi = Math.max(...xs);
-  const datasets = [
-    {
-      type: "scatter",
-      label: town ? titleCase(town) : "All blocks",
-      data: d.points.map((p) => ({ x: p[0], y: p[1] })),
-      backgroundColor: "rgba(200,16,46,0.28)",
-      pointRadius: town ? 3 : 1.6,
-      pointHoverRadius: 5,
-    },
-  ];
-  if (d.slope != null) {
-    datasets.push({
-      type: "line",
-      label: "Linear trend",
-      data: [
-        { x: lo, y: d.intercept + d.slope * lo },
-        { x: hi, y: d.intercept + d.slope * hi },
-      ],
-      borderColor: "#1f1a1b",
-      borderWidth: 2,
-      borderDash: [6, 4],
-      pointRadius: 0,
-    });
-  }
-  drawChart("chart-scatter", {
-    data: { datasets },
-    options: {
-      animation: false,
-      interaction: { mode: "nearest", intersect: true },
-      scales: {
-        x: { type: "linear", title: { display: true, text: label(x) } },
-        y: { title: { display: true, text: label(y) } },
-      },
-      plugins: {
-        tooltip: {
-          filter: (item) => item.datasetIndex === 0,
-          callbacks: {
-            label: (c) => {
-              const p = d.points[c.dataIndex];
-              return `${blockLabel(p[2])} (${titleCase(p[3])}): ${p[0]}, ${p[1]}`;
-            },
-          },
-        },
-      },
-      onClick: (_e, items) => {
-        const item = items.find((i) => i.datasetIndex === 0);
-        if (item) openBlock(d.points[item.index][2]);
-      },
-    },
-  });
-  $("#corr-scatter-stats").textContent = d.rho == null
-    ? "Not enough blocks to compare."
-    : `ρ = ${fmtRho(d.rho)} (${rhoStrength(d.rho)}) across ${fmtNum(d.n)} blocks${town ? ` in ${titleCase(town)}` : ""}. Click a dot to open that block.`;
 }
 
 // ================= livability =================
@@ -1758,10 +1918,20 @@ const PERSONA_BLURBS = {
   balanced: "Every pillar counts equally",
   family: "Schools, parks and clinics count most",
   commuter: "MRT access and CBD distance count most",
-  retiree: "Clinics, hawker food and parks count most",
+  retiree: "Clinics, food, shops and parks count most",
   budget: "Value and lease left count most",
 };
-const PILLAR_SHORT = { transport: "MRT", cbd: "CBD", food: "Food", health: "Clinic", green: "Green", schools: "School", value: "Value", lease: "Lease" };
+const PILLAR_SHORT = {
+  transport: "MRT",
+  cbd: "CBD",
+  food: "Food",
+  shopping: "Shops",
+  health: "Clinic",
+  green: "Green",
+  schools: "School",
+  value: "Value",
+  lease: "Lease",
+};
 
 const fmtDist = (m) => (m == null ? "–" : m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`);
 const fmtMin = (m) => (m == null ? "–" : `${Math.round(m)} min`);
@@ -1818,25 +1988,25 @@ async function loadLivability() {
   });
 
   $("#liv-method").innerHTML = `
+    <p class="small" style="margin: 0 0 12px; line-height: 1.6">Each block is compared with every other HDB block:
+      <b>10</b> means top of the pack, <b>5.5</b> is the middle. Pick who's moving in above and the overall score
+      weighs what matters to them.</p>
     <ul class="pillar-list">${m.pillars.map((p) => `<li><b>${esc(p.label)}</b><span>${esc(p.desc)}</span></li>`).join("")}</ul>
-    <div class="table-wrap" style="margin-top: 14px"><table class="weights">
-      <thead><tr><th>Weights</th>${m.pillars.map((p) => `<th class="num">${PILLAR_SHORT[p.key]}</th>`).join("")}</tr></thead>
-      <tbody>${m.personas
-        .map((per) => `<tr><td>${esc(per.label)}</td>${m.pillars.map((p) => `<td class="num">${per.weights[p.key] || "–"}</td>`).join("")}</tr>`)
-        .join("")}</tbody></table></div>
-    <p class="muted small" style="margin: 14px 0 0; line-height: 1.6">
-      Each pillar blends several measures, ranks every block against all other scored HDB blocks, and maps that to 1–10,
-      so 10 means top of the pack and 5.5 is the middle.</p>
-    <p class="muted small" style="margin: 10px 0 0; line-height: 1.6">
-      <b>Transport and CBD times are modelled:</b> walking at 4.8 km/h with a 1.3× detour; buses on their real routes at
-      19 km/h, with a wait that shrinks the more services a stop has; trains between stations at 45 km/h (LRT 28 km/h)
-      plus a 3 min wait and 4 min per line change. Your trip uses whichever is fastest, walking or bus to a station.
-      They're consistent estimates for comparing blocks, not timetabled journeys. Other distances are straight-line.</p>
-    <p class="muted small" style="margin: 10px 0 0; line-height: 1.6">
-      Sources: LTA station exits and codes, bus routes via busrouter.sg (LTA DataMall), NEA hawker centres, MOH CHAS GPs and
-      dentists, HPB polyclinics (list last updated 2023), a curated list of acute and community hospitals, NParks parks,
-      MOE primary schools, HDB resale prices. Supermarkets aren't included because data.gov.sg no longer publishes them.
-      Blocks appear once they've been geocoded.</p>`;
+    <details class="more" style="margin-top: 14px">
+      <summary>Weights and data sources</summary>
+      <div class="table-wrap" style="margin-top: 10px"><table class="weights">
+        <thead><tr><th>Weights</th>${m.pillars.map((p) => `<th class="num">${PILLAR_SHORT[p.key]}</th>`).join("")}</tr></thead>
+        <tbody>${m.personas
+          .map((per) => `<tr><td>${esc(per.label)}</td>${m.pillars.map((p) => `<td class="num">${per.weights[p.key] || "–"}</td>`).join("")}</tr>`)
+          .join("")}</tbody></table></div>
+      <p class="muted small" style="margin: 10px 0 0; line-height: 1.6">
+        Travel times are estimates from walking speed, real bus routes and train speeds, for comparing blocks rather than
+        planning trips. Other distances are straight-line.</p>
+      <p class="muted small" style="margin: 10px 0 0; line-height: 1.6">
+        Sources: LTA (MRT stations), busrouter.sg (bus routes), NEA (hawker centres), MOH (GPs, dentists), HPB (polyclinics),
+        NParks (parks), MOE (primary schools), HDB (resale prices), and OpenStreetMap (supermarkets, malls, food courts and
+        coffee shops, as mapped by volunteers).</p>
+    </details>`;
 
   fillSelect($("#liv-town"), state.meta.towns.filter((t) => t !== "LIM CHU KANG"));
   $("#liv-sort").insertAdjacentHTML("beforeend", m.pillars.map((p) => `<option value="${esc(p.key)}">Sort: ${esc(p.label)}</option>`).join(""));
@@ -1945,7 +2115,7 @@ function renderBlockLivability(d) {
   const box = $("#bld-liv");
   const lv = d.livability;
   if (!lv) {
-    box.innerHTML = `<h3>Livability</h3><p class="muted">${
+    box.innerHTML = `<h3>Neighbourhood score</h3><p class="muted">${
       d.listed ? "Not scored yet. Scores appear once this block has been geocoded." : "Only blocks in HDB's current register are scored."
     }</p>`;
     return;
@@ -1953,7 +2123,8 @@ function renderBlockLivability(d) {
   const pillars = [
     ["transport", "Transport"],
     ["cbd", "CBD commute"],
-    ["food", "Hawker food"],
+    ["food", "Food"],
+    ["shopping", "Shopping"],
     ["health", "Healthcare"],
     ["green", "Green space"],
     ["schools", "Schools"],
@@ -1962,36 +2133,22 @@ function renderBlockLivability(d) {
   ];
   const personaLabels = { balanced: "Balanced", family: "Young family", commuter: "Commuter", retiree: "Retiree", budget: "Budget" };
   box.innerHTML = `
-    <div class="card-head"><h3>Livability</h3>
-      <a class="link small" data-go-liv>See town rankings →</a></div>
-    <div class="liv-block">
+    <div class="card-head"><h3>Neighbourhood score</h3>
+      <a class="link small" data-go-liv>Compare neighbourhoods →</a></div>
+    <div class="liv-overall">${Object.entries(lv.overall)
+      .map(([k, v]) => `<div><div class="small muted">${personaLabels[k] || k}</div>${scoreCell(v, true)}</div>`)
+      .join("")}</div>
+    <p class="small muted" style="margin: 10px 0 0">Scores out of 10 for each kind of buyer. The balanced score beats
+      ${Math.round(lv.better_than * 100)}% of HDB blocks.</p>
+    <div class="liv-block" style="margin-top: 8px">
       <div class="chart" style="height: 300px"><canvas id="chart-block-liv"></canvas></div>
-      <div>
-        <div class="liv-overall">${Object.entries(lv.overall)
-          .map(([k, v]) => `<div><div class="small muted">${personaLabels[k] || k}</div>${scoreCell(v, true)}</div>`)
-          .join("")}</div>
-        <p class="small muted" style="margin: 10px 0 14px">Balanced score beats ${Math.round(lv.better_than * 100)}% of scored HDB blocks.</p>
-        <table class="nearby-table"><tbody>
-          <tr class="group"><td colspan="4">Transport</td></tr>
-          <tr><td>Rail</td><td><b>${esc(stationName(lv.rail_station))}</b> ${lineChips(lv.rail_station_lines)}</td>
-            <td class="num">${fmtMin(lv.rail_min)}</td><td class="muted small">${lv.rail_how === "walk" ? "walk" : esc(lv.rail_how.replace("bus", "by bus"))}</td></tr>
-          <tr><td>Interchange</td><td>${lv.interchange_via ? `via ${esc(stationName(lv.interchange_via))}` : "–"}</td>
-            <td class="num">${fmtMin(lv.interchange_min)}</td><td class="muted small">to a 2+ line station</td></tr>
-          <tr><td>Lines ≤15 min</td><td>${lineChips(lv.lines_15min_list) || "–"}</td><td class="num">${lv.lines_15min}</td><td class="muted small">LRT counts ½</td></tr>
-          <tr><td>Buses</td><td>${lv.bus_services_400m} services</td><td class="num"></td><td class="muted small">stops within 400 m</td></tr>
-          <tr><td>CBD</td><td>Raffles Place${lv.cbd_via && lv.cbd_via !== "walk" ? ` · board at ${esc(stationName(lv.cbd_via))}` : ""}</td>
-            <td class="num"><b>${fmtMin(lv.cbd_min)}</b></td><td class="muted small">door to door, est.</td></tr>
-          <tr class="group"><td colspan="4">Healthcare</td></tr>
-          <tr><td>GP</td><td><b>${esc(titleCase(lv.nearest_gp))}</b></td><td class="num">${fmtDist(lv.nearest_gp_m)}</td>
-            <td class="muted small">${lv.gps_1km} GPs · ${lv.dentists_1km} dentists ≤1 km</td></tr>
-          <tr><td>Polyclinic</td><td><b>${esc(lv.nearest_polyclinic)}</b></td><td class="num">${fmtDist(lv.nearest_polyclinic_m)}</td><td></td></tr>
-          <tr><td>Hospital</td><td><b>${esc(lv.nearest_hospital)}</b></td><td class="num">${fmtDist(lv.nearest_hospital_m)}</td><td class="muted small">acute</td></tr>
-          <tr><td>Community</td><td><b>${esc(lv.nearest_community_hospital)}</b></td><td class="num">${fmtDist(lv.nearest_community_hospital_m)}</td><td class="muted small">community hospital</td></tr>
-          <tr class="group"><td colspan="4">Everyday</td></tr>
-          <tr><td>Hawker</td><td><b>${esc(lv.nearest_hawker)}</b></td><td class="num">${fmtDist(lv.nearest_hawker_m)}</td><td class="muted small">${lv.hawkers_1km} ≤1 km</td></tr>
-          <tr><td>Park</td><td><b>${esc(titleCase(lv.nearest_park))}</b></td><td class="num">${fmtDist(lv.nearest_park_m)}</td><td class="muted small">${lv.parks_1km} ≤1 km</td></tr>
-          <tr><td>Primary school</td><td><b>${esc(titleCase(lv.nearest_primary))}</b></td><td class="num">${fmtDist(lv.nearest_primary_m)}</td><td class="muted small">${lv.primary_1km} ≤1 km · ${lv.primary_2km} ≤2 km</td></tr>
-        </tbody></table>
+      <div class="liv-facts">
+        <div><span class="label">To Raffles Place</span><b>${fmtMin(lv.cbd_min)}</b><span class="muted small">door to door by public transport</span></div>
+        <div><span class="label">Rail lines within 15 min</span><b>${lineChips(lv.lines_15min_list) || "None"}</b></div>
+        <div><span class="label">Bus services</span><b>${lv.bus_services_400m}</b><span class="muted small">at stops within 400 m</span></div>
+        <div><span class="label">Hawker stalls within 1 km</span><b>${fmtNum(lv.hawker_stalls_1km)}</b></div>
+        <div><span class="label">Supermarkets within 1 km</span><b>${fmtNum(lv.supermarkets_1km)}</b></div>
+        <div><span class="label">GPs within 1 km</span><b>${fmtNum(lv.gps_1km)}</b></div>
       </div>
     </div>`;
   box.querySelector("[data-go-liv]").addEventListener("click", () => go("#livability"));
@@ -2089,13 +2246,14 @@ function mapPopup(p, reference) {
   return `<b>${esc(blockLabel(p.unit_id))}</b><br>${esc(titleCase(p.town || ""))} ${p.postal_code ? `· ${esc(p.postal_code)}` : ""}<br>
     ${
       priced
-        ? `${fmtPsf(p.median_psf)} psf actual · <b>${fmtPsf(p.adjusted_psf)} psf</b> at ${reference} yrs lease<br>
-           ~${p.lease_years} yrs left at sale${premium != null && Math.abs(premium) >= 0.005 ? ` (${fmtPct(premium)} adjustment)` : ""}<br>
-           ${fmtMoney(p.median_price)} median · ${p.count} sales`
-        : "No recent resales"
+        ? `<b>${fmtPsf(p.median_psf)} psf</b> · ${fmtMoney(p.median_price)} median · ${p.count} sales<br>
+           ~${p.lease_years} yrs lease left${
+             premium != null && Math.abs(premium) >= 0.005 ? ` · ${fmtPsf(p.adjusted_psf)} psf if it had ${reference} yrs` : ""
+           }`
+        : "No resales in the last 3 years"
     }<br>
     ${p.max_floor_lvl ? `${p.max_floor_lvl} storeys · built ${p.year_completed}` : ""}<br>
-    <a class="link popup-open" data-unit="${esc(p.unit_id)}">Open building →</a>`;
+    <a class="link popup-open" data-unit="${esc(p.unit_id)}">Open this block →</a>`;
 }
 
 function drawLeaseCurve(data) {
@@ -2189,6 +2347,8 @@ async function loadMap() {
     $("#map-curve-card").style.display = "none";
   }
 
+  loadPois(map);
+
   L.marker([1.3624, 103.8433], {
     icon: L.divIcon({ className: "otter-marker", html: `<img src="/static/otter.svg" width="34" height="34" alt="">`, iconSize: [34, 34], iconAnchor: [17, 17] }),
     zIndexOffset: 1000,
@@ -2202,16 +2362,118 @@ async function loadMap() {
   });
 }
 
+// Centre the map on the open building and ring it.
+function focusMap(lat, lon) {
+  const map = mapState.map;
+  if (!map) return;
+  map.setView([lat, lon], Math.max(map.getZoom(), 16));
+  if (mapState.focus) mapState.focus.setLatLng([lat, lon]);
+  else mapState.focus = L.circleMarker([lat, lon], { radius: 11, weight: 3, color: "#111", fill: false, interactive: false }).addTo(map);
+}
+
+// ----- places layers (hawkers, supermarkets, malls, ...) -----
+
+const POI_MIN_ZOOM = 14; // below this the places would bury the price dots
+const poiState = { layers: {}, markers: {}, byName: {}, shown: new Set(["mrt", "hawker", "supermarket", "mall"]), control: null };
+
+function poiPopup(kind, name, detail, lat, lon) {
+  const k = POI_KINDS[kind];
+  const shown = kind === "mrt" || kind === "primary_school" || kind === "park" ? titleCase(name) : name;
+  const lines = [`<b>${k.icon} ${esc(shown)}</b>`];
+  if (kind === "mrt" && detail?.lines) lines.push(lineChips(detail.lines));
+  else lines.push(`<span class="muted">${esc(k.label.replace(/s( &|$)/, "$1"))}</span>`);
+  if (detail?.stalls) lines.push(`${detail.stalls} cooked food stalls`);
+  if (detail?.address) lines.push(`<span class="muted">${esc(detail.address)}</span>`);
+  const query = kind === "mrt" ? `${stationName(name)} MRT station` : `${name} Singapore`;
+  lines.push(`<a class="link" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}">Reviews on Google Maps ↗</a>`);
+  return lines.join("<br>");
+}
+
+async function loadPois(map) {
+  const data = await api("/api/amenities");
+  for (const [kind, rows] of Object.entries(data.kinds)) {
+    const k = POI_KINDS[kind];
+    if (!k) continue;
+    const icon = L.divIcon({ className: "poi-icon", html: `<span style="background:${k.color}">${k.icon}</span>`, iconSize: [26, 26], iconAnchor: [13, 13] });
+    const layer = L.layerGroup();
+    rows.forEach(([id, lat, lon, name, detail]) => {
+      const marker = L.marker([lat, lon], { icon, keyboard: false, zIndexOffset: 400 }).bindPopup(() => poiPopup(kind, name, detail, lat, lon));
+      layer.addLayer(marker);
+      poiState.markers[id] = { marker, kind };
+      poiState.byName[`${kind}|${name}`] = id;
+    });
+    poiState.layers[kind] = layer;
+  }
+
+  poiState.control = L.control({ position: "bottomleft" });
+  poiState.control.onAdd = () => {
+    const div = L.DomUtil.create("div", "poi-control");
+    div.innerHTML = `<span class="poi-control-head">Places</span>${Object.entries(POI_KINDS)
+      .filter(([kind]) => poiState.layers[kind])
+      .map(
+        ([kind, k]) => `<button type="button" class="poi-toggle ${poiState.shown.has(kind) ? "on" : ""}" data-kind="${kind}" title="${k.label}"
+          aria-pressed="${poiState.shown.has(kind)}"><span class="poi-dot" style="background:${k.color}">${k.icon}</span></button>`
+      )
+      .join("")}<span class="poi-control-hint">Zoom in to see places</span>`;
+    L.DomEvent.disableClickPropagation(div);
+    L.DomEvent.disableScrollPropagation(div);
+    div.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-kind]");
+      if (!btn) return;
+      const kind = btn.dataset.kind;
+      if (poiState.shown.has(kind)) poiState.shown.delete(kind);
+      else poiState.shown.add(kind);
+      syncPoiLayers();
+    });
+    return div;
+  };
+  poiState.control.addTo(map);
+  map.on("zoomend", syncPoiLayers);
+  syncPoiLayers();
+}
+
+function syncPoiLayers() {
+  const map = mapState.map;
+  const zoomedIn = map.getZoom() >= POI_MIN_ZOOM;
+  for (const [kind, layer] of Object.entries(poiState.layers)) {
+    const want = zoomedIn && poiState.shown.has(kind);
+    if (want && !map.hasLayer(layer)) map.addLayer(layer);
+    else if (!want && map.hasLayer(layer)) map.removeLayer(layer);
+  }
+  const box = poiState.control?.getContainer();
+  if (!box) return;
+  box.classList.toggle("zoomed-out", !zoomedIn);
+  $$("[data-kind]", box).forEach((b) => {
+    b.classList.toggle("on", poiState.shown.has(b.dataset.kind));
+    b.setAttribute("aria-pressed", poiState.shown.has(b.dataset.kind));
+  });
+}
+
+// Show one place from a nearby list: switch its layer on, centre on it and open its popup.
+function focusPoi(key) {
+  const entry = poiState.markers[key] || poiState.markers[poiState.byName[key]];
+  if (!entry) return;
+  poiState.shown.add(entry.kind);
+  const map = mapState.map;
+  map.setView(entry.marker.getLatLng(), Math.max(map.getZoom(), 16));
+  syncPoiLayers();
+  entry.marker.openPopup();
+  const rect = $("#map").getBoundingClientRect();
+  if (rect.bottom < 0 || rect.top > window.innerHeight) $("#map").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
 // ================= boot =================
 
 async function boot() {
-  $$(".tab").forEach((t) => t.addEventListener("click", () => go(`#${t.dataset.tab}`)));
-  $$(".subtab").forEach((t) => t.addEventListener("click", () => go(`#analyse/${t.dataset.sub}`)));
-  $(".brand").addEventListener("click", () => go("#overview"));
+  $(".brand").addEventListener("click", () => go("#building"));
+  syncHeaderHeight();
+  window.addEventListener("resize", syncHeaderHeight);
   initBuildingSearch();
   state.meta = await api("/api/meta");
   renderBuildingExamples();
   $("#empty-otter").innerHTML = standingOtter(122, 117, 2.4, "");
+  loadOnce("map");
+  watchSections();
   window.addEventListener("hashchange", route);
   route();
 }

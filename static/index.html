@@ -17,35 +17,71 @@
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <div class="brand" data-go="overview">
+      <div class="brand">
         <img class="brand-otter" src="/static/otter.svg" width="36" height="36" alt="" />
-        <div>HDB Explorer<small>Singapore resale flats, 1990 – today · otter approved</small></div>
+        <div>HDB Explorer<small>Singapore resale flats, prices and neighbourhoods</small></div>
       </div>
       <form class="header-search" id="header-search">
         <input id="header-search-input" placeholder="Postal code, e.g. 560174" inputmode="numeric" autocomplete="off" />
         <button type="submit">Find block</button>
       </form>
     </div>
-    <nav class="tabs">
-      <button class="tab" data-tab="overview">Overview</button>
-      <button class="tab" data-tab="building">Building</button>
-      <button class="tab" data-tab="analyse">Analyse</button>
-      <button class="tab" data-tab="livability">Livability</button>
-      <button class="tab" data-tab="map">Map</button>
-    </nav>
   </header>
 
   <main>
-    <!-- ================= OVERVIEW ================= -->
-    <section class="view" id="view-overview">
-      <div class="hero" id="hero"></div>
-      <h2>Market overview</h2>
+    <!-- ================= BUILDING + MAP ================= -->
+    <section class="explorer" id="view-building">
+      <div class="explorer-building">
+        <h2>Look up any HDB block</h2>
+        <p class="subtitle">See what each floor sells for, what it's worth today, and what's within walking distance.</p>
+        <div class="building-search">
+          <form class="search-box" id="building-search" autocomplete="off">
+            <input id="building-search-input" placeholder="Postal code (560174) or address (174 Ang Mo Kio Ave 4)" />
+            <div class="suggestions" id="building-suggestions"></div>
+          </form>
+          <button class="btn" form="building-search" type="submit">Show block</button>
+        </div>
+        <div id="building-error"></div>
+        <div id="building-content">
+          <div class="card empty" id="building-empty">
+            <svg width="170" height="130" viewBox="0 0 170 130" aria-hidden="true">
+              <rect x="20" y="20" width="60" height="96" rx="4" fill="#fde8ea" />
+              <rect x="16" y="14" width="68" height="10" rx="3" fill="#c8102e" />
+              <g fill="#fff">
+                <rect x="28" y="32" width="10" height="10" rx="2" /><rect x="45" y="32" width="10" height="10" rx="2" /><rect x="62" y="32" width="10" height="10" rx="2" />
+                <rect x="28" y="50" width="10" height="10" rx="2" /><rect x="45" y="50" width="10" height="10" rx="2" /><rect x="62" y="50" width="10" height="10" rx="2" />
+                <rect x="28" y="68" width="10" height="10" rx="2" /><rect x="45" y="68" width="10" height="10" rx="2" /><rect x="62" y="68" width="10" height="10" rx="2" />
+              </g>
+              <rect x="42" y="94" width="16" height="22" rx="3" fill="#c8102e" />
+              <rect x="0" y="116" width="170" height="14" rx="7" fill="#d7eef7" />
+              <g class="otter-bob" id="empty-otter"></g>
+            </svg>
+            <h3>Pick a block to get started</h3>
+            <ul class="how-to">
+              <li><b>Search</b> a postal code or street above</li>
+              <li><b>Click a dot</b> on the map, coloured by recent $ psf</li>
+              <li><b>Zoom in</b> to see hawker centres, supermarkets, malls and MRT stations</li>
+            </ul>
+            <p>Or try one of these:</p>
+            <div class="chips" style="justify-content: center" id="building-examples"></div>
+          </div>
+        </div>
+      </div>
+      <div class="explorer-map">
+        <p class="subtitle" id="map-subtitle">Loading…</p>
+        <div id="map"></div>
+      </div>
+    </section>
+
+    <!-- ================= MARKET ================= -->
+    <section class="topic" id="view-overview">
+      <h2>Market pulse</h2>
       <p class="subtitle" id="overview-subtitle">Loading…</p>
       <div class="kpis" id="overview-kpis"></div>
       <div class="grid cols-2">
         <div class="card">
           <div class="card-head">
-            <h3>Monthly median price (last 5 years)</h3>
+            <h3>Monthly median (last 5 years)</h3>
             <div class="segmented" id="overview-monthly-metric">
               <button data-value="median_price" class="active">Price</button>
               <button data-value="median_psf">$ psf</button>
@@ -59,7 +95,7 @@
           <div class="chart"><canvas id="chart-by-type"></canvas></div>
         </div>
         <div class="card">
-          <div class="card-head"><h3>Resale volume & million-dollar flats</h3></div>
+          <div class="card-head"><h3>Resales per year & million-dollar flats</h3></div>
           <div class="chart"><canvas id="chart-volume"></canvas></div>
         </div>
         <div class="card flush">
@@ -69,52 +105,113 @@
       </div>
     </section>
 
-    <!-- ================= BUILDING ================= -->
-    <section class="view" id="view-building">
-      <h2>Building explorer</h2>
-      <p class="subtitle">Search a postal code or address to see what each floor band sells for.</p>
-      <div class="building-search">
-        <form class="search-box" id="building-search" autocomplete="off">
-          <input id="building-search-input" placeholder="Postal code (560174) or address (174 Ang Mo Kio Ave 4)" />
-          <div class="suggestions" id="building-suggestions"></div>
-        </form>
-        <button class="btn" form="building-search" type="submit">Show building</button>
+    <!-- ================= TOWNS ================= -->
+    <section class="topic" id="view-towns">
+      <h2>Compare towns</h2>
+      <p class="subtitle" id="towns-subtitle">Last 12 months of resales, plus every HDB block on record.</p>
+      <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap">
+        <label class="field" style="flex-direction: row; align-items: center; gap: 8px">Flat type
+          <select id="towns-flat-type" class="inline"><option value="">All types</option></select>
+        </label>
       </div>
-      <div id="building-error"></div>
-      <div id="building-content">
-        <div class="card empty" id="building-empty">
-          <svg width="170" height="130" viewBox="0 0 170 130" aria-hidden="true">
-            <rect x="20" y="20" width="60" height="96" rx="4" fill="#fde8ea" />
-            <rect x="16" y="14" width="68" height="10" rx="3" fill="#c8102e" />
-            <g fill="#fff">
-              <rect x="28" y="32" width="10" height="10" rx="2" /><rect x="45" y="32" width="10" height="10" rx="2" /><rect x="62" y="32" width="10" height="10" rx="2" />
-              <rect x="28" y="50" width="10" height="10" rx="2" /><rect x="45" y="50" width="10" height="10" rx="2" /><rect x="62" y="50" width="10" height="10" rx="2" />
-              <rect x="28" y="68" width="10" height="10" rx="2" /><rect x="45" y="68" width="10" height="10" rx="2" /><rect x="62" y="68" width="10" height="10" rx="2" />
-            </g>
-            <rect x="42" y="94" width="16" height="22" rx="3" fill="#c8102e" />
-            <rect x="0" y="116" width="170" height="14" rx="7" fill="#d7eef7" />
-            <g class="otter-bob" id="empty-otter"></g>
-          </svg>
-          <h3>Pick a block and the otters will build it</h3>
-          <p>Try one of these:</p>
-          <div class="chips" style="justify-content: center" id="building-examples"></div>
+      <div class="card" style="margin-bottom: 16px">
+        <div class="card-head">
+          <h3>Prices over time</h3>
+          <div class="segmented" id="compare-metric">
+            <button data-value="price" class="active">Median price</button>
+            <button data-value="psf">Median $ psf</button>
+          </div>
+        </div>
+        <div class="chips" id="compare-chips" style="margin-bottom: 12px"></div>
+        <div class="chart tall"><canvas id="chart-compare"></canvas></div>
+        <p class="muted small">Click a town in the table below to add or remove it (up to 8).</p>
+      </div>
+      <div class="card flush">
+        <div class="table-wrap"><table id="towns-table"></table></div>
+      </div>
+    </section>
+
+    <!-- ================= NEIGHBOURHOODS ================= -->
+    <section class="topic" id="view-livability">
+      <h2>Find a neighbourhood</h2>
+      <p class="subtitle" id="liv-subtitle">Every HDB block scored 1–10 on what's nearby and what you get for the price.</p>
+      <div class="liv-personas" id="liv-personas"></div>
+      <div class="kpis" id="liv-kpis"></div>
+      <div class="grid cols-2" style="margin-bottom: 16px">
+        <div class="card flush">
+          <div class="card-head" style="padding: 18px 18px 0"><h3>Town rankings</h3>
+            <span class="muted small">Median block score · click a town to filter</span></div>
+          <div class="table-wrap" style="max-height: 560px; overflow-y: auto"><table id="liv-towns"></table></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>What the scores mean</h3></div>
+          <div id="liv-method"></div>
+        </div>
+      </div>
+      <div class="card flush">
+        <div class="pager">
+          <h3 style="margin: 0">Top blocks</h3>
+          <div class="controls" style="flex-wrap: wrap">
+            <select class="inline" id="liv-town"><option value="">All towns</option></select>
+            <select class="inline" id="liv-sort"><option value="overall">Sort: overall</option></select>
+            <select class="inline" id="liv-lease">
+              <option value="">Any lease</option>
+              <option value="60">60+ yrs left</option>
+              <option value="70">70+ yrs left</option>
+              <option value="80">80+ yrs left</option>
+            </select>
+            <select class="inline" id="liv-psf">
+              <option value="">Any $ psf</option>
+              <option value="500">Under $500 psf</option>
+              <option value="600">Under $600 psf</option>
+              <option value="700">Under $700 psf</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap"><table id="liv-blocks"></table></div>
+        <div class="pager">
+          <span class="muted small" id="liv-count"></span>
+          <button class="btn ghost" id="liv-more">Show more</button>
         </div>
       </div>
     </section>
 
-    <!-- ================= ANALYSE ================= -->
-    <section class="view" id="view-analyse">
-    <nav class="subtabs">
-      <button class="subtab" data-sub="explore">Transactions</button>
-      <button class="subtab" data-sub="towns">Towns</button>
-      <button class="subtab" data-sub="insights">Insights</button>
-      <button class="subtab" data-sub="correlations">Correlations</button>
-    </nav>
+    <!-- ================= PRICE DRIVERS ================= -->
+    <section class="topic" id="view-insights">
+      <h2>What drives HDB prices</h2>
+      <p class="subtitle" id="insights-subtitle">Patterns from the last 3 years of resales.</p>
+      <div class="chips" id="insights-types" style="margin-bottom: 16px"></div>
+      <div class="grid cols-2">
+        <div class="card">
+          <div class="card-head"><h3>Higher floors cost more</h3><span class="muted small">Median $ psf by storey</span></div>
+          <div class="chart"><canvas id="chart-storey"></canvas></div>
+        </div>
+        <div class="card" id="map-curve-card">
+          <div class="card-head"><h3>Shorter leases cost less</h3><span class="muted small">All flat types</span></div>
+          <div class="chart" style="height: 220px"><canvas id="chart-lease-curve"></canvas></div>
+          <p class="muted small" id="map-curve-note" style="margin: 12px 0 0; line-height: 1.6"></p>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Flat model premium</h3><span class="muted small">Median $ psf</span></div>
+          <div class="chart"><canvas id="chart-model"></canvas></div>
+        </div>
+        <div class="card flush">
+          <div class="card-head" style="padding: 18px 18px 0">
+            <h3>Best value blocks <span class="muted small">(lowest $ psf, 70+ yrs lease left)</span></h3>
+          </div>
+          <div class="table-wrap"><table id="table-value"></table></div>
+        </div>
+        <div class="card flush">
+          <div class="card-head" style="padding: 18px 18px 0"><h3>Priciest blocks by $ psf</h3></div>
+          <div class="table-wrap"><table id="table-priciest"></table></div>
+        </div>
+      </div>
+    </section>
 
-    <!-- ===== Transactions ===== -->
-    <div class="subview" id="view-explore">
-      <h2>Explore transactions</h2>
-      <p class="subtitle">Filter, sort and export every resale transaction since 1990.</p>
+    <!-- ================= TRANSACTIONS ================= -->
+    <section class="topic" id="view-explore">
+      <h2>Search every resale</h2>
+      <p class="subtitle">Filter, sort and export every HDB resale since 1990. Click a row to open its block.</p>
       <div class="card" style="margin-bottom: 16px">
         <form class="filters" id="explore-filters">
           <label class="field">Search<input name="q" placeholder="Street or block" /></label>
@@ -168,7 +265,7 @@
         </div>
         <div class="table-wrap"><table id="explore-table"></table></div>
         <div class="pager">
-          <span class="muted small">Click a row to open its building</span>
+          <span class="muted small">Click a row to open its block</span>
           <div class="controls">
             <button class="btn ghost" id="explore-prev">← Prev</button>
             <span id="explore-page" class="small"></span>
@@ -176,185 +273,36 @@
           </div>
         </div>
       </div>
-    </div>
+    </section>
 
-    <!-- ===== Towns ===== -->
-    <div class="subview" id="view-towns">
-      <h2>Towns</h2>
-      <p class="subtitle" id="towns-subtitle">Last 12 months of resales, plus every HDB block on record.</p>
-      <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap">
-        <label class="field" style="flex-direction: row; align-items: center; gap: 8px">Flat type
-          <select id="towns-flat-type" class="inline"><option value="">All types</option></select>
-        </label>
-      </div>
-      <div class="card" style="margin-bottom: 16px">
-        <div class="card-head">
-          <h3>Compare towns over time</h3>
-          <div class="segmented" id="compare-metric">
-            <button data-value="price" class="active">Median price</button>
-            <button data-value="psf">Median $ psf</button>
-          </div>
-        </div>
-        <div class="chips" id="compare-chips" style="margin-bottom: 12px"></div>
-        <div class="chart tall"><canvas id="chart-compare"></canvas></div>
-        <p class="muted small">Click a town in the table below to add or remove it (up to 8).</p>
-      </div>
-      <div class="card flush">
-        <div class="table-wrap"><table id="towns-table"></table></div>
-      </div>
-    </div>
-
-    <!-- ===== Insights ===== -->
-    <div class="subview" id="view-insights">
-      <h2>Insights</h2>
-      <p class="subtitle" id="insights-subtitle">Patterns from the last 3 years of resales.</p>
-      <div class="chips" id="insights-types" style="margin-bottom: 16px"></div>
+    <!-- ================= ESTIMATES ================= -->
+    <section class="topic" id="view-model">
+      <h2>How our price estimates work</h2>
+      <p class="subtitle" id="model-subtitle">Every block's estimated value comes from a model trained on recent resales.</p>
+      <div class="kpis" id="model-kpis"></div>
       <div class="grid cols-2">
         <div class="card">
-          <div class="card-head"><h3>Lease decay: $ psf by remaining lease</h3></div>
-          <div class="chart"><canvas id="chart-lease"></canvas></div>
+          <div class="card-head"><h3>What matters most to price</h3></div>
+          <div class="chart" style="height: 380px"><canvas id="chart-model-importance"></canvas></div>
         </div>
         <div class="card">
-          <div class="card-head"><h3>Height premium: $ psf by storey</h3></div>
-          <div class="chart"><canvas id="chart-storey"></canvas></div>
-        </div>
-        <div class="card">
-          <div class="card-head"><h3>Flat model: median $ psf</h3></div>
-          <div class="chart"><canvas id="chart-model"></canvas></div>
-        </div>
-        <div class="card">
-          <div class="card-head"><h3>Flat age at sale vs price</h3></div>
-          <div class="chart"><canvas id="chart-age"></canvas></div>
-        </div>
-        <div class="card">
-          <div class="card-head"><h3>Seasonality: average sales per calendar month</h3></div>
-          <div class="chart"><canvas id="chart-season"></canvas></div>
+          <h3>In plain terms</h3>
+          <div id="model-method" class="muted" style="font-size: 0.88rem; line-height: 1.7"></div>
         </div>
         <div class="card flush">
-          <div class="card-head" style="padding: 18px 18px 0"><h3>Priciest blocks by $ psf</h3></div>
-          <div class="table-wrap"><table id="table-priciest"></table></div>
-        </div>
-        <div class="card flush">
-          <div class="card-head" style="padding: 18px 18px 0">
-            <h3>Best value blocks <span class="muted small">(lowest $ psf, ≥70 yrs lease left)</span></h3>
-          </div>
-          <div class="table-wrap"><table id="table-value"></table></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ===== Correlations ===== -->
-    <div class="subview" id="view-correlations">
-      <h2>Correlations</h2>
-      <p class="subtitle" id="corr-subtitle">How livability factors move together, and which ones go with higher prices.</p>
-      <div class="card" style="margin-bottom: 16px">
-        <div class="card-head">
-          <h3>What goes with a higher $ psf?</h3>
-          <span class="muted small">Spearman ρ with each block's median $ psf</span>
-        </div>
-        <div class="chart" style="height: 460px"><canvas id="chart-drivers"></canvas></div>
-        <p class="muted small" style="margin: 12px 0 0; line-height: 1.6">
-          <b>Across Singapore</b> compares every block, so it mixes in the big premium for central towns.
-          <b>Within the same town</b> compares blocks only against their own town, then averages across towns
-          (weighted by block count), which shows what matters once location is held roughly constant.
-          For distances and minutes, a negative ρ means <i>closer or quicker goes with pricier</i>.
-          The Value score is left out because it's computed from $ psf, and the CBD and Lease scores are shown via
-          their raw measures (commute minutes, lease years), which they mirror exactly.</p>
-      </div>
-      <div class="card" style="margin-bottom: 16px">
-        <div class="card-head">
-          <h3>Correlation matrix</h3>
-          <div class="segmented" id="corr-group">
-            <button data-value="score" class="active">Pillar scores</button>
-            <button data-value="raw">Raw measures</button>
-          </div>
-        </div>
-        <div class="table-wrap"><table class="corr-matrix" id="corr-matrix"></table></div>
-        <div class="legend corr-legend">
-          <span>−1</span><span class="bar corr-bar"></span><span>+1</span>
-          <span style="margin-left: auto">Click a cell to plot that pair below</span>
-        </div>
-      </div>
-      <div class="card" id="corr-scatter-card">
-        <div class="card-head" style="flex-wrap: wrap">
-          <h3>Scatter explorer</h3>
-          <div class="controls" style="display: flex; gap: 8px; flex-wrap: wrap">
-            <select class="inline" id="corr-x"></select>
-            <span class="muted small" style="align-self: center">vs</span>
-            <select class="inline" id="corr-y"></select>
-            <select class="inline" id="corr-town"><option value="">All towns</option></select>
-          </div>
-        </div>
-        <div class="chart" style="height: 440px"><canvas id="chart-scatter"></canvas></div>
-        <p class="muted small" id="corr-scatter-stats" style="margin: 10px 0 0"></p>
-      </div>
-    </div>
-    </section>
-
-    <!-- ================= LIVABILITY ================= -->
-    <section class="view" id="view-livability">
-      <h2>Livability</h2>
-      <p class="subtitle" id="liv-subtitle">Every HDB block scored 1–10 on what's nearby and what you get for the price.</p>
-      <div class="liv-personas" id="liv-personas"></div>
-      <div class="kpis" id="liv-kpis"></div>
-      <div class="grid cols-2" style="margin-bottom: 16px">
-        <div class="card flush">
-          <div class="card-head" style="padding: 18px 18px 0"><h3>Town rankings</h3>
-            <span class="muted small">Median block score · click a town to filter</span></div>
-          <div class="table-wrap" style="max-height: 560px; overflow-y: auto"><table id="liv-towns"></table></div>
-        </div>
-        <div class="card">
-          <div class="card-head"><h3>How scores work</h3></div>
-          <div id="liv-method"></div>
-        </div>
-      </div>
-      <div class="card flush">
-        <div class="pager">
-          <h3 style="margin: 0">Top blocks</h3>
-          <div class="controls" style="flex-wrap: wrap">
-            <select class="inline" id="liv-town"><option value="">All towns</option></select>
-            <select class="inline" id="liv-sort"><option value="overall">Sort: overall</option></select>
-            <select class="inline" id="liv-lease">
-              <option value="">Any lease</option>
-              <option value="60">60+ yrs left</option>
-              <option value="70">70+ yrs left</option>
-              <option value="80">80+ yrs left</option>
-            </select>
-            <select class="inline" id="liv-psf">
-              <option value="">Any $ psf</option>
-              <option value="500">Under $500 psf</option>
-              <option value="600">Under $600 psf</option>
-              <option value="700">Under $700 psf</option>
-            </select>
-          </div>
-        </div>
-        <div class="table-wrap"><table id="liv-blocks"></table></div>
-        <div class="pager">
-          <span class="muted small" id="liv-count"></span>
-          <button class="btn ghost" id="liv-more">Show more</button>
-        </div>
-      </div>
-    </section>
-
-    <!-- ================= MAP ================= -->
-    <section class="view" id="view-map">
-      <h2>Map</h2>
-      <p class="subtitle" id="map-subtitle">Loading…</p>
-      <div id="map"></div>
-      <div class="card" id="map-curve-card" style="margin-top: 16px">
-        <div class="card-head"><h3>How remaining lease is priced</h3></div>
-        <div class="grid cols-2" style="align-items: center">
-          <div class="chart" style="height: 260px"><canvas id="chart-lease-curve"></canvas></div>
-          <p class="muted" id="map-curve-note" style="margin: 0; line-height: 1.7; font-size: 0.9rem"></p>
+          <div class="card-head" style="padding: 18px 18px 0"><h3>Accuracy by town</h3><span class="muted small">Typical miss on sales it hadn't seen</span></div>
+          <div class="table-wrap" style="max-height: 420px; overflow-y: auto"><table id="model-towns"></table></div>
         </div>
       </div>
     </section>
   </main>
 
+  <button class="to-top" id="to-top" aria-label="Back to top" title="Back to top">↑</button>
   <div class="tooltip" id="tooltip"></div>
   <footer>
     <img src="/static/otter.svg" width="22" height="22" alt="" style="vertical-align: middle; margin-right: 6px" />
-    Data: HDB via data.gov.sg (Open Data Licence) · Geocoding: OneMap · Moral support: the Bishan otters
+    Data: HDB, NEA, LTA, MOE, MOH and NParks via data.gov.sg (Open Data Licence) · Supermarkets, malls and food courts:
+    © OpenStreetMap contributors · Geocoding: OneMap · Estimates, not valuations
   </footer>
 
   <script src="/static/app.js"></script>

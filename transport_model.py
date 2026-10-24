@@ -268,12 +268,14 @@ class TransportModel:
                 "lines": ",".join(sorted(self.station_lines[s])),
                 "exit": exit_code if how == "walk" else None,
                 "walk_m": round(meters) if how == "walk" and meters is not None else None,
+                "lon": round(self.station_coord[s][1], 5),
             }
             for s, (m, how, exit_code, meters) in ranked
             if m <= LINES_WINDOW_MIN
         ][:MAX_LISTED_STATIONS] or [
             {"station": rail_station, "min": round(rail_min, 1), "how": rail_how,
-             "lines": ",".join(sorted(self.station_lines[rail_station])), "exit": None, "walk_m": None}
+             "lines": ",".join(sorted(self.station_lines[rail_station])), "exit": None, "walk_m": None,
+             "lon": round(self.station_coord[rail_station][1], 5)}
         ]
 
         interchange_options = [
