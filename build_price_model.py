@@ -19,12 +19,16 @@ Writes to data/hdb.db:
   model_meta        JSON blobs: summary metrics, factor importance, predicted vs
                     actual sample, error by town
 
+and saves the final models to data/price_model.pkl so the web app can price
+any flat a user describes.
+
 Run after build_livability.py.
 """
 
 import json
 import math
 import pathlib
+import pickle
 import sqlite3
 import time
 from collections import Counter, defaultdict
@@ -34,6 +38,7 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.inspection import permutation_importance
 
 DB_FILE = pathlib.Path(__file__).parent / "data" / "hdb.db"
+MODEL_FILE = pathlib.Path(__file__).parent / "data" / "price_model.pkl"
 WINDOW_MONTHS = 36
 TEST_MONTHS = 6
 RANDOM_STATE = 0
@@ -108,8 +113,8 @@ def make_model(loss: str = "squared_error", quantile: float | None = None) -> Hi
 class Encoder:
     """Integer codes for categorical columns; unseen values map to a shared 'other' code."""
 
-    def __init__(self, rows: list[dict]):
-        self.codes = {c: {v: i for i, v in enumerate(sorted({r[c] for r in rows}))} for c in CATEGORICAL}
+    def __init__(self, rows: list[dict] | None = None, codes: dict | None = None):
+        self.codes = codes or {c: {v: i for i, v in enumerate(sorted({r[c] for r in rows}))} for c in CATEGORICAL}
 
     def matrix(self, rows: list[dict]) -> np.ndarray:
         out = np.empty((len(rows), len(FEATURES)), dtype=np.float64)
@@ -148,6 +153,38 @@ def load_training_rows(conn: sqlite3.Connection, since: str) -> list[dict]:
             r["interchange_min"] = MISSING_MINUTES
         out.append(r)
     return out
+
+
+def load_blocks(conn: sqlite3.Connection, unit_id: str | None = None) -> list[dict]:
+    """Scored blocks with everything the model needs about the block itself."""
+    liv_cols = ", ".join(f"l.{c}" for c in ["unit_id"] + LIVABILITY_COLUMNS)
+    cursor = conn.execute(
+        f"""
+        SELECT {liv_cols}, p.max_floor_lvl, p.total_dwelling_units, p.year_completed,
+               {', '.join(f'p."{c}"' for c in UNIT_TYPE_COLUMNS.values())}
+        FROM livability l JOIN property_info p ON p.unit_id = l.unit_id
+        {"WHERE l.unit_id = ?" if unit_id else ""}
+        """,
+        (unit_id,) if unit_id else (),
+    )
+    cols = [d[0] for d in cursor.description]
+    return [dict(zip(cols, v)) for v in cursor]
+
+
+def flat_row(block: dict, flat_type: str, flat_model: str, area: float, low: int, high: int, month_idx: int) -> dict:
+    """One flat in a block, as a model input row."""
+    return {
+        **block,
+        "flat_type": flat_type,
+        "flat_model": flat_model,
+        "floor_area_sqm": area,
+        "storey_low": low,
+        "storey_high": high,
+        "storey_mid": (low + high) / 2,
+        "lease_years": block["lease_left_years"],
+        "month_index": month_idx,
+        "interchange_min": block["interchange_min"] if block["interchange_min"] is not None else MISSING_MINUTES,
+    }
 
 
 def metrics(actual: np.ndarray, predicted: np.ndarray) -> dict:
@@ -279,17 +316,15 @@ def main() -> None:
     final_lo = make_model("quantile", 0.1).fit(X, y)
     final_hi = make_model("quantile", 0.9).fit(X, y)
 
+    with MODEL_FILE.open("wb") as f:
+        pickle.dump(
+            {"price": final, "low": final_lo, "high": final_hi, "codes": encoder.codes,
+             "interval_margin": interval_margin, "month": latest},
+            f,
+        )
+
     # ----- predict every block x flat type x storey band at the latest month -----
-    liv_cols = ", ".join(f"l.{c}" for c in ["unit_id"] + LIVABILITY_COLUMNS)
-    blocks = conn.execute(
-        f"""
-        SELECT {liv_cols}, p.max_floor_lvl, p.total_dwelling_units, p.year_completed,
-               {', '.join(f'p."{c}"' for c in UNIT_TYPE_COLUMNS.values())}
-        FROM livability l JOIN property_info p ON p.unit_id = l.unit_id
-        """
-    )
-    block_cols = [d[0] for d in blocks.description]
-    blocks = [dict(zip(block_cols, v)) for v in blocks]
+    blocks = load_blocks(conn)
 
     area_rows = conn.execute("SELECT unit_id, town, flat_type, floor_area_sqm, flat_model FROM transactions WHERE year >= ?", (int(latest[:4]) - 10,))
     block_area, town_area, type_area = defaultdict(list), defaultdict(list), defaultdict(list)
@@ -316,20 +351,7 @@ def main() -> None:
             flat_model = models.most_common(1)[0][0]
             for low in range(1, floors + 1, 3):
                 high = min(low + 2, max(floors, low))
-                pred_rows.append(
-                    {
-                        **b,
-                        "flat_type": flat_type,
-                        "flat_model": flat_model,
-                        "floor_area_sqm": area,
-                        "storey_low": low,
-                        "storey_high": high,
-                        "storey_mid": (low + high) / 2,
-                        "lease_years": b["lease_left_years"],
-                        "month_index": latest_index,
-                        "interchange_min": b["interchange_min"] if b["interchange_min"] is not None else MISSING_MINUTES,
-                    }
-                )
+                pred_rows.append(flat_row(b, flat_type, flat_model, area, low, high, latest_index))
 
     P = encoder.matrix(pred_rows)
     price = np.exp(final.predict(P))

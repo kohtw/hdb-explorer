@@ -309,6 +309,17 @@ def load_osm_places() -> dict[str, list[tuple[float, float, str]]]:
     return kept
 
 
+def densify(lines: list[list[list[float]]], step_m: float = 25) -> list[tuple[float, float, None]]:
+    """Points along each line at most step_m apart, so nearest-point distance approximates distance to the line."""
+    points = []
+    for line in lines:
+        points.append((line[0][0], line[0][1], None))
+        for (lat1, lon1), (lat2, lon2) in zip(line, line[1:]):
+            steps = max(1, int(distance_m(lat1, lon1, lat2, lon2) // step_m))
+            points += [(lat1 + (lat2 - lat1) * i / steps, lon1 + (lon2 - lon1) * i / steps, None) for i in range(1, steps + 1)]
+    return points
+
+
 def write_amenities(conn: sqlite3.Connection, layers: dict[str, list[tuple[float, float, str, dict]]]) -> None:
     conn.execute("DROP TABLE IF EXISTS amenities")
     conn.execute(
@@ -358,7 +369,7 @@ def main() -> None:
 
     blocks = conn.execute(
         """
-        SELECT p.unit_id, p.block, p.street_name, p.town, p.year_completed, g.latitude, g.longitude
+        SELECT p.unit_id, p.block, p.street_name, p.town, p.year_completed, p.max_floor_lvl, g.latitude, g.longitude
         FROM property_info p JOIN geocode g ON g.unit_id = p.unit_id
         WHERE p.residential = 'Y' AND g.geocode_status = 'ok' AND g.latitude IS NOT NULL
         """
@@ -402,10 +413,20 @@ def main() -> None:
     community = PointIndex(hospitals["community"])
     parks = PointIndex(load_geojson_points("parks.geojson", lambda p: p["NAME"].strip()) + load_extra_parks())
     schools = PointIndex(load_primary_schools())
+    # Not scored as pillars; raw distances the price model uses (noise, cemeteries, views, how packed the blocks are).
+    osm_features = json.loads((AMENITY_DIR / "osm_features.json").read_text(encoding="utf-8"))
+    rail_above = PointIndex(densify(osm_features["rail_above"]))
+    expressways = PointIndex(densify(osm_features["expressway"]))
+    cemeteries = PointIndex(densify(osm_features["cemetery"]))
+    water = PointIndex(densify(osm_features["water"]))
+    block_points = PointIndex([(b["latitude"], b["longitude"], b["unit_id"]) for b in blocks])
+    block_floors = {b["unit_id"]: b["max_floor_lvl"] or 0 for b in blocks}
 
     rows = []
     for b in blocks:
         lat, lon = b["latitude"], b["longitude"]
+        near_blocks = [(d, unit_id) for d, unit_id in block_points.within(lat, lon, 400) if unit_id != b["unit_id"]]
+        neighbours = [d for d, _ in near_blocks]
         mrt_d, (exit_station, exit_code) = exits.nearest(lat, lon)
         hawker_d, (hawker_name, _, _) = hawkers.nearest(lat, lon)
         market_d, market_name = supermarkets.nearest(lat, lon)
@@ -460,6 +481,14 @@ def main() -> None:
                 "primary_2km": len(schools.within(lat, lon, 2000)),
                 "median_psf": round(psf, 2) if psf else None,
                 "lease_left_years": LEASE_YEARS - (current_year - start) if start else None,
+                "rail_above_m": round(rail_above.nearest(lat, lon)[0]),
+                "expressway_m": round(expressways.nearest(lat, lon)[0]),
+                "cemetery_m": round(cemeteries.nearest(lat, lon)[0]),
+                "water_m": round(water.nearest(lat, lon)[0]),
+                "nearest_block_m": round(min(neighbours)) if neighbours else 400,
+                "blocks_200m": sum(d <= 200 for d in neighbours),
+                # Floors above this are clear of the surrounding blocks (a rough proxy for an open view).
+                "neighbour_max_floor_100m": max((block_floors[u] for d, u in near_blocks if d <= 100), default=0),
             }
         )
 

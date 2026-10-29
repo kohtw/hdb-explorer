@@ -13,8 +13,10 @@ python download_hdb_property_info.py
 python build_webapp_db.py
 python build_lease_curve.py
 python download_amenities.py
+python build_footprints.py
 python build_livability.py
 python build_price_model.py
+python build_mop_model.py
 python precompute.py
 
 # Only hdb.db, the property list and the geocode cache are needed at runtime.

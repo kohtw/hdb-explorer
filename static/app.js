@@ -136,17 +136,18 @@ const metricFmt = (metric) => (metric === "count" ? fmtNum : metric.includes("ps
 
 // ================= routing =================
 
-const state = { meta: null, loaded: {} };
-// Page sections top to bottom; Building + Map is the hero, the rest scroll beneath it.
-const SECTIONS = ["building", "overview", "towns", "livability", "insights", "explore", "model"];
+const state = { meta: null, loaded: {}, tab: null };
+// One tab per section; each loads the first time it's opened.
+const SECTIONS = ["building", "market", "towns", "explore"];
+const TAB_TITLES = { building: "Block & map", market: "Market", towns: "Towns & neighbourhoods", explore: "All resales" };
 const LOADERS = {
-  overview: loadOverview,
+  market: () => {
+    loadOverview();
+    loadInsights();
+  },
   map: loadMap,
-  livability: loadLivability,
-  model: loadModel,
   explore: initExplore,
   towns: loadTowns,
-  insights: loadInsights,
 };
 
 function go(hash) {
@@ -161,56 +162,40 @@ function loadOnce(name) {
 }
 
 function route() {
-  let [tab, kind, ...rest] = location.hash.replace(/^#/, "").split("/");
-  // Analyse sub-tabs and the Map tab used to be separate pages; keep their old links working.
-  if (tab === "analyse") tab = SECTIONS.includes(kind) ? kind : "explore";
-  if (tab === "map") tab = "building";
-  if (tab === "correlations") tab = "insights";
-  if (!SECTIONS.includes(tab)) return;
-
-  if (tab === "building") {
-    if (kind) {
-      const value = decodeURIComponent(rest.join("/"));
-      loadBuilding(kind === "postal" ? { postal: value } : { unit_id: value });
-    }
+  const [hashTab, kind, ...rest] = location.hash.replace(/^#/, "").split("/");
+  const tab = SECTIONS.includes(hashTab) ? hashTab : "building";
+  showTab(tab);
+  loadOnce(tab);
+  if (tab === "building" && kind) {
+    const value = decodeURIComponent(rest.join("/"));
+    loadBuilding(kind === "postal" ? { postal: value } : { unit_id: value });
     window.scrollTo({ top: 0 });
-  } else {
-    loadOnce(tab);
-    jumpTo($(`#view-${tab}`));
   }
 }
 
-// Sections above the target may still be loading and growing, so keep the target
-// in place while the page settles, until the user scrolls themselves.
-function jumpTo(el) {
-  el.scrollIntoView({ block: "start" });
-  const done = new AbortController();
-  const resize = new ResizeObserver(() => el.scrollIntoView({ block: "start" }));
-  const stop = () => {
-    resize.disconnect();
-    done.abort();
-  };
-  resize.observe($("main"));
-  ["wheel", "touchstart", "keydown", "mousedown"].forEach((ev) =>
-    window.addEventListener(ev, stop, { passive: true, signal: done.signal })
-  );
-  setTimeout(stop, 4000);
+function showTab(tab) {
+  if (state.tab !== tab) window.scrollTo({ top: 0 });
+  state.tab = tab;
+  SECTIONS.forEach((name) => ($(`#view-${name}`).hidden = name !== tab));
+  $$("#tabs a").forEach((a) => a.setAttribute("aria-current", a.dataset.tab === tab ? "page" : "false"));
+  setTitle();
+  // Leaflet measures its container, which has no size while its tab is hidden.
+  if (tab === "building") mapState.map?.invalidateSize();
 }
 
-// Sections load as they come near the screen.
-function watchSections() {
-  const lazy = new IntersectionObserver(
-    (entries) => entries.forEach((e) => e.isIntersecting && loadOnce(e.target.id.replace(/^view-/, ""))),
-    { rootMargin: "600px 0px" }
-  );
-  SECTIONS.forEach((name) => lazy.observe($(`#view-${name}`)));
-  const toTop = $("#to-top");
-  window.addEventListener("scroll", () => toTop.classList.toggle("show", window.scrollY > window.innerHeight), { passive: true });
-  toTop.addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
+function setTitle() {
+  const page = state.tab === "building" && building.data ? blockLabel(building.data.unit_id) : TAB_TITLES[state.tab];
+  document.title = `${page} · HDB Explorer`;
 }
 
 function syncHeaderHeight() {
-  document.documentElement.style.setProperty("--header-h", `${$(".topbar").offsetHeight}px`);
+  document.documentElement.style.setProperty("--header-h", `${$("#tabs").offsetHeight}px`);
+}
+
+function initToTop() {
+  const toTop = $("#to-top");
+  window.addEventListener("scroll", () => toTop.classList.toggle("show", window.scrollY > window.innerHeight), { passive: true });
+  toTop.addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
 }
 
 function openBlock(unitId) {
@@ -281,59 +266,6 @@ async function loadOverview() {
   };
   bindSegmented("#overview-monthly-metric", drawMonthly);
   drawMonthly("median_price");
-
-  const years = [...new Set(data.yearly_by_type.map((r) => r.year))];
-  const types = [...new Set(data.yearly_by_type.map((r) => r.flat_type))];
-  const lookup = new Map(data.yearly_by_type.map((r) => [`${r.year}|${r.flat_type}`, r]));
-  drawChart("chart-by-type", {
-    type: "line",
-    data: {
-      labels: years,
-      datasets: types.map((t, i) => ({
-        label: titleCase(t),
-        data: years.map((y) => {
-          const r = lookup.get(`${y}|${t}`);
-          return r && r.count >= 10 ? r.median_price : null;
-        }),
-        borderColor: PALETTE[i % PALETTE.length],
-        backgroundColor: PALETTE[i % PALETTE.length],
-        tension: 0.3,
-        spanGaps: true,
-      })),
-    },
-    options: {
-      plugins: { tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmtFull(c.parsed.y)}` } } },
-      scales: { y: moneyAxis },
-    },
-  });
-
-  drawChart("chart-volume", {
-    data: {
-      labels: data.yearly_volume.map((r) => r.year),
-      datasets: [
-        { type: "bar", label: "Resales", data: data.yearly_volume.map((r) => r.count), backgroundColor: "#f8c5cb", borderRadius: 4, yAxisID: "y" },
-        { type: "line", label: "$1M+ flats", data: data.yearly_volume.map((r) => r.million_count), borderColor: "#c8102e", backgroundColor: "#c8102e", yAxisID: "y1", tension: 0.3 },
-      ],
-    },
-    options: {
-      scales: {
-        y: { position: "left", title: { display: true, text: "Resales" } },
-        y1: { position: "right", grid: { drawOnChartArea: false }, title: { display: true, text: "$1M+ flats" } },
-      },
-    },
-  });
-
-  $("#table-top-recent").innerHTML = `
-    <thead><tr><th>Month</th><th>Block</th><th>Type</th><th>Storey</th><th class="num">Price</th><th class="num">$ psf</th></tr></thead>
-    <tbody>${data.top_recent
-      .map(
-        (r) => `<tr class="clickable" data-unit="${esc(r.unit_id)}">
-          <td>${fmtMonth(r.month)}</td><td>${esc(blockLabel(r.unit_id))}<div class="muted small">${esc(r.town)}</div></td>
-          <td>${esc(titleCase(r.flat_type))}</td><td>${esc(r.storey_range)}</td>
-          <td class="num price">${fmtFull(r.resale_price)}</td><td class="num">${fmtPsf(r.price_psf)}</td></tr>`
-      )
-      .join("")}</tbody>`;
-  bindRowClicks("#table-top-recent");
 }
 
 function bindSegmented(selector, onChange) {
@@ -428,18 +360,6 @@ function initBuildingSearch() {
     if (results[0]) return openBlock(results[0].unit_id);
     showBuildingError("Type a 6-digit postal code, or pick an address from the suggestions.");
   });
-
-  $("#header-search").addEventListener("submit", (e) => {
-    e.preventDefault();
-    const q = $("#header-search-input").value.trim();
-    if (/^\d{6}$/.test(q)) openPostal(q);
-    else {
-      go("#building");
-      input.value = q;
-      input.focus();
-      search(q);
-    }
-  });
 }
 
 function showBuildingError(message, candidates = []) {
@@ -482,6 +402,7 @@ async function loadBuilding(query) {
       return loadBuilding({ unit_id: data.unit_id });
     }
     building.data = data;
+    setTitle();
     $("#building-search-input").value = query.postal || blockLabel(data.unit_id);
     renderBuilding();
   } catch (err) {
@@ -583,15 +504,11 @@ function renderBuilding() {
         </div>
       </div>
       <div class="card flush">
-        <div class="card-head" style="padding: 18px 18px 0"><h3>Price by floor</h3>
-          <span class="muted small">${d.hidden_band_count ? `${d.hidden_band_count} sales in older overlapping bands hidden` : "Click a row to filter the sales below"}</span></div>
-        <div class="table-wrap"><table id="bld-bands"></table></div>
-      </div>
-      <div class="card flush">
         <div class="card-head" style="padding: 18px 18px 0"><h3 id="bld-recent-title">Recent resales</h3>
           <button class="btn ghost" id="bld-clear-band" style="display:none">Show all floors</button></div>
         <div class="table-wrap" style="max-height: 380px; overflow-y: auto"><table id="bld-recent"></table></div>
       </div>
+      ${mopCardHtml(d)}
       ${valueCardHtml(d)}
       <div class="card" id="bld-payment"></div>
       <div class="card" id="bld-places"></div>
@@ -628,7 +545,6 @@ function renderBuilding() {
     building.metric = v;
     building.noAnim = true;
     drawBuildingSvg();
-    renderBandTable();
   });
   if ($("#bld-split")) {
     bindSegmented("#bld-split", (v) => {
@@ -647,11 +563,12 @@ function renderBuilding() {
     if (chip) openBlock(chip.dataset.unit);
   });
   $("#bld-clear-band").addEventListener("click", () => selectBand(null));
-  $$("[data-go-model]").forEach((a) => a.addEventListener("click", () => go("#model")));
+  renderYours(d);
+  renderModelDetails(d);
+  renderMopDetails(d);
   $$("[data-go-value]").forEach((a) => a.addEventListener("click", () => $("#bld-value").scrollIntoView({ behavior: "smooth", block: "start" })));
 
   drawBuildingSvg();
-  renderBandTable();
   renderRecent();
 
   drawChart("chart-block-trend", {
@@ -726,7 +643,6 @@ function valueCardHtml(d) {
   return `<div class="card flush" id="bld-value">
     <div class="card-head" style="padding: 18px 18px 0">
       <h3>What's it worth today?</h3>
-      <a class="link small" data-go-model>How estimates work →</a>
     </div>
     <p class="muted small" style="margin: 6px 18px 10px; line-height: 1.6">Estimated price of this block's usual flat of each type on a
       middle floor, at ${fmtMonth(p.month)} prices. Most sales land inside the range shown; typical miss is about
@@ -735,7 +651,247 @@ function valueCardHtml(d) {
       <thead><tr><th>Type</th><th class="num">Estimate</th><th class="num">Low → high floor</th><th class="num">Sold here, last 12 mo</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
+    <div id="bld-yours" style="margin: 16px 18px 0">
+      <h4 style="margin: 0 0 4px">Price your flat</h4>
+      <p class="muted small" style="margin: 0 0 10px">Describe a specific flat in this block and the model prices it.</p>
+      <form class="pay-grid" id="yours-form" autocomplete="off">
+        <label class="field">Flat type<select id="yours-type">${est
+          .map((e) => `<option value="${esc(e.type)}">${esc(titleCase(e.type))}</option>`)
+          .join("")}</select></label>
+        <label class="field">Flat model<select id="yours-model"></select></label>
+        <label class="field">Size (sqm)<input type="number" id="yours-area" min="20" max="300" step="1" /></label>
+        <label class="field">Floor<input type="number" id="yours-floor" min="1" max="${d.info?.max_floor_lvl || 60}" step="1" /></label>
+      </form>
+      <div class="pay-result" id="yours-result"></div>
+    </div>
+    <details class="more" id="bld-model" style="margin: 14px 18px 18px">
+      <summary>How this estimate works</summary>
+      <div id="bld-model-body" style="margin-top: 12px"></div>
+    </details>
   </div>`;
+}
+
+// Price once MOP ends, for blocks still in MOP (forecast) or that MOP'd in the last year (pre-MOP forecast vs real sales).
+function mopCardHtml(d) {
+  const m = d.mop;
+  if (!m) return "";
+  const byType = {};
+  m.rows.forEach((r) => (byType[r.flat_type] = byType[r.flat_type] || []).push(r));
+  const first = m.rows[0];
+  const inMop = !!first.mop_estimated;
+  const rows = Object.entries(byType)
+    .map(([type, bands]) => {
+      const mid = bands[Math.floor((bands.length - 1) / 2)];
+      const low = bands[0];
+      const high = bands[bands.length - 1];
+      const c = m.check[type];
+      const vs = c ? c.vs_pred : null;
+      return `<tr>
+        <td><b>${esc(titleCase(type))}</b><div class="muted small">${Math.round(mid.floor_area_sqm)} sqm · ${esc(mid.flat_model)}</div></td>
+        <td class="num"><b class="price value-big">${fmtMoney(mid.nominal_price)}</b><div class="muted small">${fmtMoney(mid.nominal_low)} – ${fmtMoney(mid.nominal_high)}</div></td>
+        <td class="num">${fmtMoney(mid.today_price)}<div class="muted small">${fmtMoney(mid.today_low)} – ${fmtMoney(mid.today_high)}</div></td>
+        <td class="num small">${bands.length > 1 ? `${fmtMoney(low.nominal_price)} → ${fmtMoney(high.nominal_price)}` : "–"}
+          <div class="muted small">${bands.length > 1 ? `floor ${low.storey_low} → ${high.storey_high}` : ""}</div></td>
+        ${inMop ? "" : `<td class="num small">${
+          c
+            ? `${fmtMoney(c.median_price)} <span class="muted">· ${c.count} sold</span><div class="${vs > 0.02 ? "above" : vs < -0.02 ? "below" : "muted"}">${fmtPct(vs)} vs forecast</div>`
+            : `<span class="muted">none yet</span>`
+        }</td>`}</tr>`;
+    })
+    .join("");
+  const intro = inMop
+    ? `Still in its Minimum Occupation Period. Resales should start around <b>${fmtMonth(first.mop_month)}</b> (estimated from when similar
+      blocks first resold). Forecast made with data up to ${fmtMonth(first.asof_month)}, for the usual flat of each type on a middle floor.`
+    : `MOP ended: first resale ${fmtMonth(first.mop_month)}. Below is what the model forecast using only data up to
+      ${fmtMonth(first.asof_month)}, before any flat here was sold, next to what flats have actually fetched since.`;
+  return `<div class="card flush" id="bld-mop">
+    <div class="card-head" style="padding: 18px 18px 0"><h3>${inMop ? "What will it fetch when MOP ends?" : "Did the pre-MOP forecast hold?"}</h3></div>
+    <p class="muted small" style="margin: 6px 18px 10px; line-height: 1.6">${intro}
+      <b>At MOP</b> includes a forecast of where the market goes by then; <b>today's money</b> is the same flat at current market prices.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Type</th><th class="num">At MOP</th><th class="num">Today's money</th><th class="num">Low → high floor</th>${inMop ? "" : `<th class="num">Sold since MOP</th>`}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <details class="more" id="bld-mop-model" style="margin: 14px 18px 18px">
+      <summary>How this forecast was tested</summary>
+      <div id="bld-mop-model-body" style="margin-top: 12px"></div>
+    </details>
+  </div>`;
+}
+
+let mopInfo = null;
+
+// Backtest scorecard: accuracy by how early the forecast was made, and the leakage checks the build passed.
+async function renderMopDetails(d) {
+  const box = $("#bld-mop-model");
+  if (!box) return;
+  try {
+    mopInfo = mopInfo || (await api("/api/mop-model"));
+  } catch {
+    return;
+  }
+  if (!box.isConnected || !mopInfo.summary) return;
+  const { summary: s, by_horizon: byHorizon, checks } = mopInfo;
+  const pct = (v, digits = 1) => (v == null ? "–" : `${(v * 100).toFixed(digits)}%`);
+  const when = (h) => (h === 1 ? "1 month before" : `${h / 12} yr${h > 12 ? "s" : ""} before`);
+  const own = byHorizon.find((b) => b.horizon === (d.mop.rows[0].mop_estimated ? nearestHorizon(d.mop.rows[0].horizon_months, byHorizon) : 1));
+  const checkList = [
+    ["features_before_cutoff", "Every input is dated before the forecast date"],
+    ["own_block_excluded", "A block never sees its own sales"],
+    ["index_uses_past_only", "Market index never revised by later months"],
+    ["truncation_rebuild", "Inputs identical when all later data is deleted"],
+    ["no_snapshot_features", "No 2026 MRT, amenity or livability data used"],
+    ["walk_forward", "Scored only by models trained on earlier sales"],
+    ["trend_selection_past_only", "Trend method picked only from forecasts already resolved"],
+    ["shuffled_labels", "Model on shuffled prices does much worse"],
+  ];
+  $("#bld-mop-model-body").innerHTML = `
+    <p class="muted small" style="margin: 0 0 12px; line-height: 1.6">Replayed on ${fmtNum(s.events)} blocks that already reached MOP.
+      For each, the model was trained only on sales before the forecast date, then compared with what flats sold for in the block's
+      first 12 months of resales. Errors below are for MOPs from ${s.report_from_year} on.
+      ${own ? `For a forecast made ${when(own.horizon)} MOP, like this one, the typical miss is <b>±${pct(own.nominal.mape)}</b>.` : ""}</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Forecast made</th><th class="num">At MOP</th><th class="num">…if market flat</th><th class="num">Today's money</th><th class="num">Nearby sales only</th><th class="num">Sales checked</th></tr></thead>
+      <tbody>${byHorizon
+        .map((b) => `<tr><td>${when(b.horizon)} MOP</td><td class="num"><b>±${pct(b.nominal.mape)}</b></td>
+          <td class="num">±${pct(b.nominal_nochange.mape)}</td><td class="num">±${pct(b.today.mape)}</td>
+          <td class="num muted">±${pct(b.naive_today.mape)}</td><td class="num muted">${fmtNum(b.today.n)}</td></tr>`)
+        .join("")}</tbody>
+    </table></div>
+    <p class="muted small" style="line-height: 1.6"><b>At MOP</b> projects the market with whichever trend (flat, straight-line or fading) had forecast best up to the
+      forecast date, never using later months to choose; <b>…if market flat</b> assumes no
+      change; <b>today's money</b> takes the actual market at sale time, so it isolates how well the block's premium is predicted;
+      <b>nearby sales only</b> is a naive reference: same-type resales within 1 km.</p>
+    <h4 style="margin: 12px 0 6px">Leakage checks (run on every build)</h4>
+    <ul class="small" style="margin: 0; padding-left: 18px; line-height: 1.7">${checkList
+      .map(([k, label]) => `<li>${checks[k]?.ok ? "✓" : "✗"} ${label}</li>`)
+      .join("")}</ul>`;
+}
+
+const nearestHorizon = (h, byHorizon) => byHorizon.reduce((a, b) => (Math.abs(b.horizon - h) < Math.abs(a.horizon - h) ? b : a)).horizon;
+
+// "Price your flat": starts from the block's usual flat of a type, and re-prices as the user edits it.
+function renderYours(d) {
+  if (!$("#yours-form")) return;
+  const est = estimatesByType(d);
+  const typeSel = $("#yours-type");
+  const modelSel = $("#yours-model");
+  modelSel.innerHTML = state.meta.flat_models.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
+  let seq = 0;
+
+  const price = debounce(async () => {
+    const mine = ++seq;
+    const box = $("#yours-result");
+    const usual = est.find((e) => e.type === typeSel.value);
+    try {
+      const r = await api("/api/estimate", {
+        unit_id: d.unit_id,
+        flat_type: typeSel.value,
+        flat_model: modelSel.value,
+        floor_area_sqm: $("#yours-area").value,
+        storey: $("#yours-floor").value,
+      });
+      if (mine !== seq || !box.isConnected) return;
+      const vsUsual = usual ? r.price / usual.mid.pred_price - 1 : null;
+      box.innerHTML = `
+        <div><div class="label">Estimate</div><div class="value">${fmtFull(r.price)}</div>
+          <div class="small muted">${fmtMoney(r.low)} – ${fmtMoney(r.high)}</div></div>
+        <div><div class="label">$ psf</div><div class="value">${fmtPsf(r.psf)}</div></div>
+        <div><div class="label">vs usual ${esc(TYPE_LABELS[typeSel.value] || titleCase(typeSel.value))}</div>
+          <div class="value">${vsUsual == null ? "–" : fmtPct(vsUsual)}</div>
+          <div class="small muted">${usual ? `${fmtMoney(usual.mid.pred_price)} · middle floor` : ""}</div></div>
+        <p class="small muted" style="grid-column: 1 / -1; margin: 0">Priced as floors ${esc(r.storey_range.replace(" TO ", "–"))} at
+          ${fmtMonth(r.month)} prices. Renovation, facing and view aren't included.</p>`;
+    } catch (err) {
+      if (mine === seq && box.isConnected) box.innerHTML = `<p class="small muted" style="grid-column: 1 / -1; margin: 0">${esc(err.message)}</p>`;
+    }
+  }, 250);
+
+  const fillFromType = () => {
+    const usual = est.find((e) => e.type === typeSel.value);
+    if (!usual) return;
+    $("#yours-area").value = Math.round(usual.mid.floor_area_sqm);
+    modelSel.value = usual.mid.flat_model;
+    if (!$("#yours-floor").value) $("#yours-floor").value = Math.round((usual.mid.storey_low + usual.mid.storey_high) / 2);
+  };
+  typeSel.value = (est.find((e) => e.type === "4 ROOM") || est[0]).type;
+  fillFromType();
+  typeSel.addEventListener("change", () => {
+    fillFromType();
+    price();
+  });
+  [modelSel, $("#yours-area"), $("#yours-floor")].forEach((el) => el.addEventListener("input", price));
+  $("#yours-form").addEventListener("submit", (e) => e.preventDefault());
+  price();
+}
+
+// The price model's accuracy and method, shown inside the value card. Fetched once, drawn on first open.
+let modelInfo = null;
+
+async function renderModelDetails(d) {
+  const box = $("#bld-model");
+  if (!box) return;
+  try {
+    modelInfo = modelInfo || (await api("/api/model"));
+  } catch {
+    return;
+  }
+  if (!box.isConnected || !modelInfo.summary) return;
+  const { summary: s, importance, town_errors: townErrors } = modelInfo;
+  const mm = s.model;
+  const pct = (v, digits = 0) => `${(v * 100).toFixed(digits)}%`;
+  const own = townErrors.find((t) => t.town === d.town);
+
+  $("#bld-model-body").innerHTML = `
+    <p class="muted small" style="margin: 0 0 12px; line-height: 1.6">Learned from ${fmtNum(s.n_total)} resales
+      (${fmtMonth(s.window.from)} – ${fmtMonth(s.window.to)}), then checked against ${fmtNum(s.n_test)} newer sales it hadn't seen.
+      ${own ? `In ${esc(titleCase(d.town))} its typical miss is <b>±${pct(own.mape, 1)}</b>.` : ""}</p>
+    <div class="kpis">
+      <div class="kpi hero"><div class="label">Typical miss</div><div class="value">±${pct(mm.mape, 1)}</div>
+        <div class="sub">vs ±${pct(s.baseline.mape, 1)} using the town's median price</div></div>
+      <div class="kpi"><div class="label">Within 5%</div><div class="value">${pct(mm.within_5pct)}</div><div class="sub">of sales</div></div>
+      <div class="kpi"><div class="label">Within 10%</div><div class="value">${pct(mm.within_10pct)}</div><div class="sub">of sales</div></div>
+      <div class="kpi"><div class="label">Inside the range</div><div class="value">${pct(mm.interval_coverage)}</div><div class="sub">of sales</div></div>
+    </div>
+    <div class="grid cols-2">
+      <div><h4 style="margin: 0 0 8px">What matters most to price</h4>
+        <div class="chart" style="height: 340px"><canvas id="chart-model-importance"></canvas></div></div>
+      <div class="muted" style="font-size: 0.88rem; line-height: 1.7">
+        <p style="margin-top:0"><b>What it learns from.</b> Every HDB resale in the last 3 years: the flat's type, model, size, floor
+          and lease left, and the block's location, MRT and bus access, CBD commute, nearby food, clinics, parks and schools.</p>
+        <p><b>How we check it.</b> It learns only from sales before ${fmtMonth(s.test_from)}, then prices the ${fmtNum(s.n_test)} sales
+          since. Its typical miss is ±${pct(mm.mape, 1)}, against ±${pct(s.baseline.mape, 1)} if you just used the town's median
+          price for that flat type.</p>
+        <p><b>The range.</b> Each estimate comes with a low–high range that ${pct(mm.interval_coverage)} of real sales fell inside.</p>
+        <p style="margin-bottom:0"><b>What it can't see.</b> Renovation, facing, view, noise or the exact unit, so a particular flat can
+          sell well above or below. It also doesn't forecast. Treat it as a reference point, not a valuation.</p>
+      </div>
+    </div>
+    <h4 style="margin: 16px 0 8px">Accuracy by town <span class="muted small">(typical miss on sales it hadn't seen)</span></h4>
+    <div class="table-wrap" style="max-height: 300px; overflow-y: auto"><table>
+      <thead><tr><th>Town</th><th class="num">Typical miss</th><th class="num">Sales checked</th></tr></thead>
+      <tbody>${townErrors
+        .map((t) => `<tr style="${t.town === d.town ? "background:var(--red-soft)" : ""}"><td>${esc(titleCase(t.town))}</td>
+          <td class="num"><b>±${pct(t.mape, 1)}</b></td><td class="num muted">${fmtNum(t.n)}</td></tr>`)
+        .join("")}</tbody>
+    </table></div>`;
+
+  // A chart drawn inside a closed <details> has no size, so draw it when opened.
+  const draw = () =>
+    drawChart("chart-model-importance", {
+      type: "bar",
+      data: {
+        labels: importance.map((r) => r.factor),
+        datasets: [{ data: importance.map((r) => r.share * 100), backgroundColor: importance.map((_, i, a) => colorScale(1 - i / Math.max(1, a.length - 1))), borderRadius: 4 }],
+      },
+      options: {
+        indexAxis: "y",
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.parsed.x.toFixed(0)}% of what the model relies on` } } },
+        scales: { x: { ticks: { callback: (v) => `${v}%` } } },
+      },
+    });
+  if (box.open) draw();
+  box.addEventListener("toggle", () => box.open && draw());
 }
 
 // ----- monthly payment -----
@@ -1460,42 +1616,7 @@ function selectBand(range, type = null) {
   building.selectedType = range ? type : null;
   building.noAnim = true;
   drawBuildingSvg();
-  renderBandTable();
   renderRecent();
-}
-
-function renderBandTable() {
-  const d = building.data;
-  const bands = [...d.bands].reverse();
-  const order = new Map((d.layout || []).map((g, i) => [g.flat_type, i]));
-  const byType = (b) =>
-    [...b.types]
-      .sort((x, y) => (order.get(x.flat_type) ?? 99) - (order.get(y.flat_type) ?? 99))
-      .map((t) => `${TYPE_LABELS[t.flat_type] || titleCase(t.flat_type)} ${building.metric === "psf" ? fmtPsf(t.median_psf) : fmtMoney(t.median_price)}`)
-      .join(" · ");
-  $("#bld-bands").innerHTML = `
-    <thead><tr><th>Floors</th><th class="num">Median</th><th class="num">$ psf</th><th>By type</th><th class="num">Sold</th><th>Latest</th></tr></thead>
-    <tbody>${
-      bands
-        .map(
-          (b) => `<tr class="clickable" data-band="${esc(b.storey_range)}" style="${building.selectedBand === b.storey_range ? "background:var(--red-soft)" : ""}">
-            <td><span style="display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:8px;background:${swatchFor(b)}"></span>${b.storey_low}–${b.storey_high}</td>
-            <td class="num price">${fmtMoney(b.median_price)}</td><td class="num">${fmtPsf(b.median_psf)}</td>
-            <td class="muted small">${esc(byType(b))}</td>
-            <td class="num">${b.count}</td><td class="muted">${fmtMonth(b.latest_month)}</td></tr>`
-        )
-        .join("") || `<tr><td colspan="6" class="muted">No resales in this period</td></tr>`
-    }</tbody>`;
-  $$("#bld-bands tr[data-band]").forEach((tr) =>
-    tr.addEventListener("click", () => selectBand(building.selectedBand === tr.dataset.band && !building.selectedType ? null : tr.dataset.band))
-  );
-}
-
-function swatchFor(band) {
-  const values = building.data.bands.map(bandValue).filter((v) => v != null);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  return colorScale(max > min ? (bandValue(band) - min) / (max - min) : 0.55);
 }
 
 function renderRecent() {
@@ -1686,20 +1807,18 @@ function drawExploreYear() {
 
 // ================= towns =================
 
-const towns = { data: null, sort: "median_price", dir: "desc", compare: ["BISHAN", "PUNGGOL", "WOODLANDS"], metric: "price", flatType: "" };
+// One table per town: prices from /api/towns joined with the persona's livability score from /api/livability/towns.
+const towns = { data: null, liv: null, sort: "overall", dir: "desc", compare: ["BISHAN", "PUNGGOL", "WOODLANDS"], metric: "price", flatType: "" };
 
 const TOWN_COLUMNS = [
-  ["town", "Town", (r) => `<b>${esc(titleCase(r.town))}</b>`],
+  ["town", "Town", (r) => `<b>${esc(titleCase(r.town))}</b>${r.blocks ? `<div class="muted small">${fmtNum(r.blocks)} blocks</div>` : ""}`],
+  ["overall", "Score", (r) => scoreCell(r.overall, true), true],
+  ["cbd_min", "To CBD", (r) => fmtMin(r.cbd_min), true],
   ["median_price", "Median price", (r) => `<span class="price">${fmtFull(r.median_price)}</span>`, true],
   ["yoy_change", "YoY", (r) => deltaTag(r.yoy_change), true],
   ["median_psf", "$ psf", (r) => fmtPsf(r.median_psf), true],
   ["count", "Resales (12m)", (r) => fmtNum(r.count), true],
-  ["max_price", "Top sale", (r) => fmtMoney(r.max_price), true],
   ["avg_lease_years", "Avg lease left", (r) => (r.avg_lease_years ? `${r.avg_lease_years.toFixed(0)} yrs` : "–"), true],
-  ["blocks", "HDB blocks", (r) => fmtNum(r.blocks), true],
-  ["dwelling_units", "Homes", (r) => fmtNum(r.dwelling_units), true],
-  ["avg_year_completed", "Avg built", (r) => (r.avg_year_completed ? Math.round(r.avg_year_completed) : "–"), true],
-  ["tallest", "Tallest", (r) => (r.tallest ? `${r.tallest} fl` : "–"), true],
 ];
 
 async function loadTowns() {
@@ -1709,7 +1828,9 @@ async function loadTowns() {
       towns.flatType = e.target.value;
       loadTownsData();
       drawCompare();
+      loadBudget();
     });
+    $("#budget-input").addEventListener("input", debounce(loadBudget, 300));
     bindSegmented("#compare-metric", (m) => {
       towns.metric = m;
       drawCompare();
@@ -1731,17 +1852,47 @@ async function loadTowns() {
   }
   loadTownsData();
   drawCompare();
+  loadLivability();
+  loadBudget();
+}
+
+// Biggest flats each town sold within the budget over the last 12 months.
+let budgetSeq = 0;
+
+async function loadBudget() {
+  const budget = +$("#budget-input").value;
+  if (!budget) return;
+  const mine = ++budgetSeq;
+  const data = await withLoading($("#budget-table").closest(".card"), api("/api/budget", { budget, flat_type: towns.flatType }));
+  if (mine !== budgetSeq) return;
+  const type = towns.flatType ? `${titleCase(towns.flatType)} ` : "";
+  $("#budget-note").textContent = `${type}resales at or under ${fmtFull(data.budget)}, ${fmtMonth(data.window.from)} – ${fmtMonth(data.window.to)}. Towns where your budget bought the most space come first.`;
+  $("#budget-table").innerHTML = `
+    <thead><tr><th>Town</th><th class="num">Typical size</th><th class="num">Biggest sold</th><th class="num">Median price</th>
+      <th class="num">Sales in budget</th></tr></thead>
+    <tbody>${data.towns
+      .map(
+        (t) => `<tr${t.count ? "" : ` class="muted"`}><td><b>${esc(titleCase(t.town))}</b></td>
+          <td class="num">${t.median_sqm ? `<b>${Math.round(t.median_sqm)} sqm</b>` : "–"}</td>
+          <td class="num">${t.max_sqm ? `${Math.round(t.max_sqm)} sqm <span class="muted small">${esc(TYPE_LABELS[t.max_type] || titleCase(t.max_type))}</span>` : "–"}</td>
+          <td class="num">${fmtMoney(t.median_price)}</td>
+          <td class="num">${fmtNum(t.count)} <span class="muted small">of ${fmtNum(t.total)} · ${t.total ? Math.round((t.count / t.total) * 100) : 0}%</span></td></tr>`
+      )
+      .join("")}</tbody>`;
 }
 
 async function loadTownsData() {
   const data = await withLoading($("#towns-table").closest(".card"), api("/api/towns", { flat_type: towns.flatType }));
   towns.data = data;
-  $("#towns-subtitle").textContent = `Resales ${fmtMonth(data.window.from)} – ${fmtMonth(data.window.to)}${towns.flatType ? ` (${titleCase(towns.flatType)})` : ""}, plus every HDB block on record. YoY compares with the prior 12 months.`;
+  $("#towns-subtitle").textContent = `Prices from resales ${fmtMonth(data.window.from)} – ${fmtMonth(data.window.to)}${towns.flatType ? ` (${titleCase(towns.flatType)})` : ""}; YoY compares with the prior 12 months. Scores rate every HDB block 1–10 on what's nearby. Pick who's moving in.`;
   renderTownsTable();
 }
 
 function renderTownsTable() {
-  const rows = [...towns.data.towns].sort((a, b) => {
+  if (!towns.data) return;
+  const liv = new Map((towns.liv?.towns || []).map((t) => [t.town, t]));
+  const merged = towns.data.towns.map((t) => ({ ...t, overall: liv.get(t.town)?.overall, cbd_min: liv.get(t.town)?.cbd_min }));
+  const rows = merged.sort((a, b) => {
     const av = a[towns.sort];
     const bv = b[towns.sort];
     if (av == null) return 1;
@@ -1816,13 +1967,12 @@ function loadInsights() {
     $$("#insights-types .chip").forEach((c) => c.classList.toggle("active", c === chip));
     loadInsightsData();
   });
-  bindRowClicks("#table-priciest");
   bindRowClicks("#table-value");
   loadInsightsData();
 }
 
 async function loadInsightsData() {
-  const d = await withLoading($("#view-insights .grid"), api("/api/insights", { flat_type: insights.flatType }));
+  const d = await withLoading($("#chart-storey").closest(".grid"), api("/api/insights", { flat_type: insights.flatType }));
   $("#insights-subtitle").textContent = `${titleCase(d.flat_type)} resales, ${fmtMonth(d.window.from)} – ${fmtMonth(d.window.to)}.`;
 
   const barOpts = (fmt) => ({ plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => fmt(c.parsed.y ?? c.parsed.x) } } } });
@@ -1854,60 +2004,7 @@ async function loadInsightsData() {
           ${extra ? `<td class="num">${r.lease_years.toFixed(0)} yrs</td>` : ""}<td class="num">${r.count}</td></tr>`
       )
       .join("")}</tbody>`;
-  $("#table-priciest").innerHTML = blockTable(d.priciest_blocks, false);
   $("#table-value").innerHTML = blockTable(d.best_value, true);
-}
-
-// ================= model =================
-
-async function loadModel() {
-  const m = await withLoading($("#model-kpis"), api("/api/model"));
-  if (!m.summary) {
-    $("#model-subtitle").textContent = "The model hasn't been trained yet. Run build_price_model.py, then reload.";
-    return;
-  }
-  const s = m.summary;
-  const mm = s.model;
-  const pct = (v, digits = 0) => `${(v * 100).toFixed(digits)}%`;
-  $("#model-subtitle").textContent = `Learned from ${fmtNum(s.n_total)} resales (${fmtMonth(s.window.from)} – ${fmtMonth(s.window.to)}), then checked against ${fmtNum(s.n_test)} newer sales it hadn't seen.`;
-
-  $("#model-kpis").innerHTML = `
-    <div class="kpi hero"><div class="label">Typical miss</div><div class="value">±${pct(mm.mape, 1)}</div>
-      <div class="sub">vs ±${pct(s.baseline.mape, 1)} using the town's median price</div></div>
-    <div class="kpi"><div class="label">Within 5% of the real price</div><div class="value">${pct(mm.within_5pct)}</div><div class="sub">of sales</div></div>
-    <div class="kpi"><div class="label">Within 10%</div><div class="value">${pct(mm.within_10pct)}</div><div class="sub">of sales</div></div>
-    <div class="kpi"><div class="label">Inside the estimate range</div><div class="value">${pct(mm.interval_coverage)}</div><div class="sub">of sales</div></div>`;
-
-  drawChart("chart-model-importance", {
-    type: "bar",
-    data: {
-      labels: m.importance.map((r) => r.factor),
-      datasets: [{ data: m.importance.map((r) => r.share * 100), backgroundColor: m.importance.map((_, i, a) => colorScale(1 - i / Math.max(1, a.length - 1))), borderRadius: 4 }],
-    },
-    options: {
-      indexAxis: "y",
-      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${c.parsed.x.toFixed(0)}% of what the model relies on` } } },
-      scales: { x: { ticks: { callback: (v) => `${v}%` } } },
-    },
-  });
-
-  $("#model-method").innerHTML = `
-    <p style="margin-top:0"><b>What it learns from.</b> Every HDB resale in the last 3 years: the flat's type, model, size, floor
-      and lease left, and the block's location, MRT and bus access, CBD commute, nearby food, clinics, parks and schools.</p>
-    <p><b>How we check it.</b> It learns only from sales before ${fmtMonth(s.test_from)}, then prices the ${fmtNum(s.n_test)} sales
-      since. Its typical miss is ±${pct(mm.mape, 1)}, against ±${pct(s.baseline.mape, 1)} if you just used the town's median
-      price for that flat type.</p>
-    <p><b>The range.</b> Each estimate comes with a low–high range that ${pct(mm.interval_coverage)} of real sales fell inside.</p>
-    <p><b>Block estimates.</b> For each block, it prices the block's usual flat of each type on every floor band, at
-      ${fmtMonth(s.predicted_month)} prices.</p>
-    <p style="margin-bottom:0"><b>What it can't see.</b> Renovation, facing, view, noise or the exact unit, so a particular flat can
-      sell well above or below. It also doesn't forecast. Treat it as a reference point, not a valuation.</p>`;
-
-  $("#model-towns").innerHTML = `
-    <thead><tr><th>Town</th><th class="num">Typical miss</th><th class="num">Sales checked</th></tr></thead>
-    <tbody>${m.town_errors
-      .map((t) => `<tr><td>${esc(titleCase(t.town))}</td><td class="num"><b>±${pct(t.mape, 1)}</b></td><td class="num muted">${fmtNum(t.n)}</td></tr>`)
-      .join("")}</tbody>`;
 }
 
 // ================= livability =================
@@ -1967,10 +2064,9 @@ function scoreCell(v, big = false) {
 async function loadLivability() {
   const m = (liv.meta = await api("/api/livability/meta"));
   if (!m.scored_blocks) {
-    $("#liv-subtitle").textContent = "Livability scores haven't been built yet. Run build_livability.py, then reload.";
+    $("#liv-personas").textContent = "Livability scores haven't been built yet. Run build_livability.py, then reload.";
     return;
   }
-  $("#liv-subtitle").textContent = `${fmtNum(m.scored_blocks)} of ${fmtNum(m.residential_blocks)} residential HDB blocks, each scored 1–10 on ${m.pillars.length} pillars. Pick who's moving in.`;
 
   $("#liv-personas").innerHTML = m.personas
     .map(
@@ -2015,17 +2111,10 @@ async function loadLivability() {
     liv.sort = $("#liv-sort").value;
     liv.minLease = $("#liv-lease").value;
     liv.maxPsf = $("#liv-psf").value;
-    highlightLivTown();
     loadLivBlocks(true);
   };
   ["#liv-town", "#liv-sort", "#liv-lease", "#liv-psf"].forEach((sel) => $(sel).addEventListener("change", onFilter));
   $("#liv-more").addEventListener("click", () => loadLivBlocks(false));
-  $("#liv-towns").addEventListener("click", (e) => {
-    const row = e.target.closest("[data-town]");
-    if (!row) return;
-    $("#liv-town").value = liv.town === row.dataset.town ? "" : row.dataset.town;
-    onFilter();
-  });
   bindRowClicks("#liv-blocks");
 
   await loadLivTowns();
@@ -2033,36 +2122,8 @@ async function loadLivability() {
 }
 
 async function loadLivTowns() {
-  const data = await withLoading($("#liv-towns").closest(".card"), api("/api/livability/towns", { persona: liv.persona }));
-  const pillars = liv.meta.pillars;
-  $("#liv-towns").innerHTML = `
-    <thead><tr><th>#</th><th>Town</th><th class="num">Score</th><th class="num" title="Median modelled commute to Raffles Place">To CBD</th>
-      ${pillars.map((p) => `<th class="num" title="${esc(p.label)}">${PILLAR_SHORT[p.key]}</th>`).join("")}</tr></thead>
-    <tbody>${data.towns
-      .map(
-        (t, i) => `<tr class="clickable" data-town="${esc(t.town)}"><td class="muted">${i + 1}</td>
-          <td><b>${esc(titleCase(t.town))}</b><div class="muted small">${fmtNum(t.blocks)} blocks</div></td>
-          <td class="num">${scoreCell(t.overall, true)}</td><td class="num small">${fmtMin(t.cbd_min)}</td>
-          ${pillars.map((p) => `<td class="num">${scoreCell(t[`score_${p.key}`])}</td>`).join("")}</tr>`
-      )
-      .join("")}</tbody>`;
-  highlightLivTown();
-
-  const top = data.towns[0];
-  const fastest = data.towns.reduce((a, b) => (b.cbd_min < a.cbd_min ? b : a));
-  const persona = liv.meta.personas.find((p) => p.key === liv.persona);
-  $("#liv-kpis").innerHTML = `
-    <div class="kpi hero"><div class="label">Best town · ${esc(persona.label)}</div>
-      <div class="value">${esc(titleCase(top.town))}</div><div class="sub">Median block scores ${top.overall.toFixed(1)} / 10</div></div>
-    <div class="kpi" id="liv-top-block"><div class="label">Best block · ${esc(persona.label)}</div><div class="value">–</div></div>
-    <div class="kpi"><div class="label">Shortest commute</div>
-      <div class="value">${esc(titleCase(fastest.town))}</div><div class="sub">~${Math.round(fastest.cbd_min)} min median to Raffles Place</div></div>
-    <div class="kpi"><div class="label">Blocks scored</div><div class="value">${fmtNum(liv.meta.scored_blocks)}</div>
-      <div class="sub">of ${fmtNum(liv.meta.residential_blocks)} residential blocks</div></div>`;
-}
-
-function highlightLivTown() {
-  $$("#liv-towns tr[data-town]").forEach((tr) => (tr.style.background = tr.dataset.town === liv.town ? "var(--red-soft)" : ""));
+  towns.liv = await api("/api/livability/towns", { persona: liv.persona });
+  renderTownsTable();
 }
 
 async function loadLivBlocks(reset) {
@@ -2100,15 +2161,24 @@ async function loadLivBlocks(reset) {
     }</tbody>`;
   $("#liv-count").textContent = `Showing ${fmtNum(liv.rows.length)} of ${fmtNum(liv.total)} blocks · $ psf "–" means no resales in 3 years (Value set to 5.0)`;
   $("#liv-more").style.display = liv.rows.length < liv.total ? "" : "none";
+}
 
-  if (reset && !liv.town && liv.sort === "overall" && !liv.minLease && !liv.maxPsf && liv.rows[0]) {
-    const best = liv.rows[0];
-    $("#liv-top-block").innerHTML = `<div class="label">Best block · ${esc(liv.meta.personas.find((p) => p.key === liv.persona).label)}</div>
-      <div class="value" style="font-size:1.25rem">${esc(blockLabel(best.unit_id))}</div>
-      <div class="sub">${esc(titleCase(best.town))} · ${best.overall.toFixed(1)} / 10</div>`;
-    $("#liv-top-block").style.cursor = "pointer";
-    $("#liv-top-block").onclick = () => openBlock(best.unit_id);
-  }
+// Things buyers weigh that the price model can't separate from location: noise, cemeteries, water views, open outlook.
+const NEAR_FLAG_M = 150;
+
+function surroundingsHtml(lv) {
+  if (lv.rail_above_m == null) return "";
+  const near = (m, text) => (m <= NEAR_FLAG_M ? `<span class="tag" style="margin-left:6px">${text}</span>` : "");
+  const outlook = lv.neighbour_max_floor_100m
+    ? `Above floor ${lv.neighbour_max_floor_100m}`
+    : "Any floor";
+  return `
+    <div><span class="label">Above-ground MRT/LRT track</span><b>${fmtDist(lv.rail_above_m)}${near(lv.rail_above_m, "may hear trains")}</b></div>
+    <div><span class="label">Expressway</span><b>${fmtDist(lv.expressway_m)}${near(lv.expressway_m, "traffic noise")}</b></div>
+    <div><span class="label">Cemetery or crematorium</span><b>${fmtDist(lv.cemetery_m)}</b></div>
+    <div><span class="label">Sea or reservoir</span><b>${fmtDist(lv.water_m)}</b></div>
+    <div><span class="label">Clear of blocks within 100 m</span><b>${outlook}</b>
+      <span class="muted small">floors higher than every neighbouring block</span></div>`;
 }
 
 function renderBlockLivability(d) {
@@ -2149,9 +2219,10 @@ function renderBlockLivability(d) {
         <div><span class="label">Hawker stalls within 1 km</span><b>${fmtNum(lv.hawker_stalls_1km)}</b></div>
         <div><span class="label">Supermarkets within 1 km</span><b>${fmtNum(lv.supermarkets_1km)}</b></div>
         <div><span class="label">GPs within 1 km</span><b>${fmtNum(lv.gps_1km)}</b></div>
+        ${surroundingsHtml(lv)}
       </div>
     </div>`;
-  box.querySelector("[data-go-liv]").addEventListener("click", () => go("#livability"));
+  box.querySelector("[data-go-liv]").addEventListener("click", () => go("#towns"));
 
   drawChart("chart-block-liv", {
     type: "radar",
@@ -2228,6 +2299,7 @@ function colourMap() {
   });
   // refreshClusters throws until the group has been added to the map.
   if (mapState.cluster && mapState.map.hasLayer(mapState.cluster)) mapState.cluster.refreshClusters();
+  if (outlineState.layer && mapState.map.hasLayer(outlineState.layer)) drawOutlines();
   if (mapState.legend) mapState.legend.remove();
   mapState.legend = L.control({ position: "bottomright" });
   mapState.legend.onAdd = () => {
@@ -2323,6 +2395,8 @@ async function loadMap() {
   colourMap();
   mapState.cluster.addLayers(mapState.markers);
   map.addLayer(mapState.cluster);
+  outlineState.layer = L.layerGroup();
+  map.on("moveend", debounce(syncOutlines, 200));
 
   if (hasAdjusted) {
     const toggle = L.control({ position: "topright" });
@@ -2360,6 +2434,57 @@ async function loadMap() {
     const link = e.target.closest(".popup-open");
     if (link) openBlock(link.dataset.unit);
   });
+}
+
+// ----- building outlines -----
+
+// From this zoom the dots give way to each block's real outline (HDB footprints); blocks without one stay dots.
+const OUTLINE_MIN_ZOOM = 16;
+const outlineState = { layer: null, cache: new Map(), seq: 0 };
+
+function mapFill(value) {
+  const bin = mapState.binFor ? mapState.binFor(value) : -1;
+  return bin < 0 ? MAP_NO_DATA : MAP_BINS[bin];
+}
+
+async function syncOutlines() {
+  const map = mapState.map;
+  if (map.getZoom() < OUTLINE_MIN_ZOOM) {
+    if (map.hasLayer(outlineState.layer)) map.removeLayer(outlineState.layer);
+    if (!map.hasLayer(mapState.cluster)) map.addLayer(mapState.cluster);
+    return;
+  }
+  const bounds = map.getBounds().pad(0.2);
+  const seq = ++outlineState.seq;
+  try {
+    const data = await api("/api/footprints", {
+      south: bounds.getSouth(),
+      west: bounds.getWest(),
+      north: bounds.getNorth(),
+      east: bounds.getEast(),
+    });
+    Object.entries(data.footprints).forEach(([unitId, rings]) => outlineState.cache.set(unitId, rings));
+  } catch {
+    // Draw with whatever outlines are cached; the rest show as dots.
+  }
+  if (seq !== outlineState.seq || map.getZoom() < OUTLINE_MIN_ZOOM) return;
+  drawOutlines(bounds);
+}
+
+function drawOutlines(bounds = mapState.map.getBounds().pad(0.2)) {
+  const map = mapState.map;
+  outlineState.layer.clearLayers();
+  mapState.points.forEach((p, i) => {
+    if (!bounds.contains([p.latitude, p.longitude])) return;
+    const fillColor = mapFill(mapState.markers[i].mapValue);
+    const rings = outlineState.cache.get(p.unit_id);
+    const shape = rings
+      ? L.polygon(rings, { color: "#8b0a1f", weight: 1, opacity: 0.6, fillColor, fillOpacity: 0.85 })
+      : L.circleMarker([p.latitude, p.longitude], { radius: 5, weight: 1, color: "#fff", fillColor, fillOpacity: 0.9 });
+    outlineState.layer.addLayer(shape.bindPopup(() => mapPopup(p, mapState.data.reference_years)));
+  });
+  if (map.hasLayer(mapState.cluster)) map.removeLayer(mapState.cluster);
+  if (!map.hasLayer(outlineState.layer)) map.addLayer(outlineState.layer);
 }
 
 // Centre the map on the open building and ring it.
@@ -2465,17 +2590,20 @@ function focusPoi(key) {
 // ================= boot =================
 
 async function boot() {
-  $(".brand").addEventListener("click", () => go("#building"));
   syncHeaderHeight();
   window.addEventListener("resize", syncHeaderHeight);
   initBuildingSearch();
+  initToTop();
+  // Show the right tab straight away; its data loads once the shared metadata arrives.
+  showTab(SECTIONS.find((s) => location.hash.startsWith(`#${s}`)) || "building");
   state.meta = await api("/api/meta");
   renderBuildingExamples();
   $("#empty-otter").innerHTML = standingOtter(122, 117, 2.4, "");
   loadOnce("map");
-  watchSections();
   window.addEventListener("hashchange", route);
   route();
+  // On desktop, put the cursor in the search box when no block is open yet.
+  if (!building.lastQuery && state.tab === "building" && matchMedia("(min-width: 981px)").matches) $("#building-search-input").focus();
 }
 
 boot();

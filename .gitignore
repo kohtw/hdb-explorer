@@ -10,3 +10,4 @@ data/*
 !data/amenities/
 data/amenities/*
 !data/amenities/osm_places.json
+!data/amenities/osm_features.json

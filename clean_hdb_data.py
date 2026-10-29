@@ -8,6 +8,7 @@ values), and writes:
 """
 
 import csv
+import datetime
 import pathlib
 
 DATA_DIR = pathlib.Path(__file__).parent / "data"
@@ -15,7 +16,7 @@ INPUT_FILE = DATA_DIR / "combined_resale_flat_prices.csv"
 OUTPUT_FILE = DATA_DIR / "cleaned_resale_flat_prices.csv"
 REJECTS_FILE = DATA_DIR / "rejected_rows.csv"
 
-MIN_YEAR, MAX_YEAR = 1960, 2026
+MIN_YEAR, MAX_YEAR = 1960, datetime.date.today().year
 
 # Older source files render flat_model in ALL CAPS or with inconsistent
 # spacing/casing; map every observed variant to the canonical spelling used

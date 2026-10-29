@@ -8,8 +8,10 @@ import csv
 import difflib
 import io
 import json
+import math
 import os
 import pathlib
+import pickle
 import re
 import sqlite3
 import threading
@@ -496,6 +498,39 @@ def api_towns():
     return jsonify(cached(f"towns:{flat_type}", compute))
 
 
+@app.route("/api/budget")
+def api_budget():
+    """Per town, what sold at or under a budget in the last 12 months, biggest flats first."""
+    db = get_db()
+    try:
+        budget = float(request.args["budget"])
+    except (KeyError, ValueError):
+        abort(400, "budget is required")
+    flat_type = request.args.get("flat_type") or ""
+    latest = latest_month(db)
+    since = shift_month(latest, -11)
+    type_clause = "AND flat_type = :type" if flat_type else ""
+    # With a single MAX() aggregate, SQLite takes the bare flat_type from the row holding the maximum.
+    rows = rows_to_dicts(
+        db.execute(
+            f"""
+            SELECT town, COUNT(*) AS total, SUM(resale_price <= :b) AS count,
+                   median(CASE WHEN resale_price <= :b THEN floor_area_sqm END) AS median_sqm,
+                   median(CASE WHEN resale_price <= :b THEN resale_price END) AS median_price,
+                   MAX(CASE WHEN resale_price <= :b THEN floor_area_sqm END) AS max_sqm, flat_type AS max_type
+            FROM transactions WHERE month >= :since {type_clause}
+            GROUP BY town
+            """,
+            {"b": budget, "since": since, "type": flat_type},
+        )
+    )
+    for r in rows:
+        if not r["count"]:
+            r["max_type"] = None
+    rows.sort(key=lambda r: (r["median_sqm"] is None, -(r["median_sqm"] or 0)))
+    return jsonify({"budget": budget, "window": {"from": since, "to": latest}, "towns": rows})
+
+
 @app.route("/api/compare")
 def api_compare():
     db = get_db()
@@ -639,6 +674,32 @@ def api_map():
     return jsonify(cached("map", compute))
 
 
+FOOTPRINT_LIMIT = 3000
+# Outlines are found by their south-west corner, so widen the box by about the largest block's size.
+FOOTPRINT_PAD_DEG = 0.003
+
+
+@app.route("/api/footprints")
+def api_footprints():
+    """Building outlines inside a map view: {unit_id: rings}."""
+    db = get_db()
+    if not table_exists(db, "footprints"):
+        return jsonify({"footprints": {}})
+    try:
+        south, west, north, east = (float(request.args[k]) for k in ("south", "west", "north", "east"))
+    except (KeyError, ValueError):
+        abort(400, "south, west, north and east are required")
+    rows = db.execute(
+        """
+        SELECT unit_id, rings FROM footprints
+        WHERE min_lat BETWEEN ? AND ? AND min_lon BETWEEN ? AND ? AND max_lat >= ? AND max_lon >= ?
+        LIMIT ?
+        """,
+        (south - FOOTPRINT_PAD_DEG, north, west - FOOTPRINT_PAD_DEG, east, south, west, FOOTPRINT_LIMIT),
+    )
+    return jsonify({"footprints": {unit_id: json.loads(rings) for unit_id, rings in rows}})
+
+
 def table_exists(db, name: str) -> bool:
     return db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone() is not None
 
@@ -672,8 +733,9 @@ def api_search():
         clauses.append("block = ?")
         params.append(block_token)
     if street_q:
-        clauses.append("street_name LIKE ?")
-        params.append(f"%{street_q}%")
+        # Users type full road words ("AVENUE"); HDB stores abbreviations ("AVE").
+        clauses.append("(street_name LIKE ? OR street_name LIKE ?)")
+        params.extend([f"%{street_q}%", f"%{abbreviate_road(street_q)}%"])
 
     rows = db.execute(
         f"""
@@ -1017,6 +1079,7 @@ def api_block():
             "nearby": nearby,
             "livability": block_livability(db, unit_id),
             "prediction": block_prediction(db, unit_id),
+            "mop": block_mop(db, unit_id),
             "amenities": nearby_amenities(db, geo["latitude"], geo["longitude"]) if geo and geo["latitude"] is not None else {},
         }
     )
@@ -1257,6 +1320,111 @@ def block_prediction(db, unit_id: str) -> dict | None:
         "recent": recent,
         "recent_since": since,
     }
+
+
+def mop_meta(db) -> dict:
+    if not table_exists(db, "mop_meta"):
+        return {}
+    return {key: json.loads(value) for key, value in db.execute("SELECT key, value FROM mop_meta")}
+
+
+@app.route("/api/mop-model")
+def api_mop_model():
+    db = get_db()
+    return jsonify(cached("mop_model", lambda: mop_meta(db)))
+
+
+def block_mop(db, unit_id: str) -> dict | None:
+    """Predicted price once MOP ends, per flat type and storey band, plus how a just-MOP'd block's sales compared."""
+    if not table_exists(db, "mop_predictions"):
+        return None
+    rows = rows_to_dicts(
+        db.execute(
+            """
+            SELECT flat_type, flat_model, floor_area_sqm, storey_low, storey_high, mop_month, mop_estimated, asof_month,
+                   horizon_months, today_price, today_low, today_high, nominal_price, nominal_low, nominal_high
+            FROM mop_predictions WHERE unit_id = ? ORDER BY flat_type, storey_low
+            """,
+            (unit_id,),
+        )
+    )
+    if not rows:
+        return None
+    check = {}
+    if table_exists(db, "mop_check"):
+        check = {
+            r["flat_type"]: dict(r)
+            for r in db.execute(
+                """
+                SELECT flat_type, COUNT(*) AS count, median(resale_price) AS median_price,
+                       median(resale_price / pred_price) - 1 AS vs_pred
+                FROM mop_check WHERE unit_id = ? GROUP BY flat_type
+                """,
+                (unit_id,),
+            )
+        }
+    return {"rows": rows, "check": check}
+
+
+MODEL_FILE = ROOT / "data" / "price_model.pkl"
+_price_model: dict = {}
+_price_model_lock = threading.Lock()
+
+
+def price_model() -> dict:
+    """The trained models, loaded on first use: numpy and scikit-learn are slow to import and use memory."""
+    with _price_model_lock:
+        if not _price_model and MODEL_FILE.exists():
+            import build_price_model
+
+            with MODEL_FILE.open("rb") as f:
+                saved = pickle.load(f)
+            _price_model.update(saved, module=build_price_model, encoder=build_price_model.Encoder(codes=saved["codes"]))
+    return _price_model
+
+
+@app.route("/api/estimate")
+def api_estimate():
+    """Model price for one flat a user describes: block, type, model, size and floor."""
+    model = price_model()
+    if not model:
+        return jsonify({"error": "The price model hasn't been trained yet."}), 503
+    unit_id = request.args.get("unit_id") or ""
+    flat_type = request.args.get("flat_type") or ""
+    flat_model = request.args.get("flat_model") or ""
+    try:
+        area = float(request.args["floor_area_sqm"])
+        storey = int(request.args["storey"])
+    except (KeyError, ValueError):
+        abort(400, "floor_area_sqm and storey are required")
+    if not 20 <= area <= 300:
+        abort(400, "Floor area should be between 20 and 300 sqm")
+    if not 1 <= storey <= 60:
+        abort(400, "Floor should be between 1 and 60")
+    if flat_type not in model["codes"]["flat_type"] or flat_model not in model["codes"]["flat_model"]:
+        abort(400, "Unknown flat type or flat model")
+
+    bpm = model["module"]
+    blocks = bpm.load_blocks(get_db(), unit_id)
+    if not blocks:
+        return jsonify({"error": "This block isn't scored yet, so it can't be priced."}), 404
+    # Sales are recorded in 3-floor bands (1-3, 4-6, ...), so price the band the floor is in.
+    low = (storey - 1) // 3 * 3 + 1
+    row = bpm.flat_row(blocks[0], flat_type, flat_model, area, low, low + 2, bpm.month_index(model["month"]))
+    X = model["encoder"].matrix([row])
+    price = math.exp(float(model["price"].predict(X)[0]))
+    low_price = math.exp(float(model["low"].predict(X)[0]) - model["interval_margin"])
+    high_price = math.exp(float(model["high"].predict(X)[0]) + model["interval_margin"])
+    return jsonify(
+        {
+            "month": model["month"],
+            "storey_range": f"{low:02d} TO {low + 2:02d}",
+            "price": round(price, -2),
+            "low": round(min(low_price, price), -2),
+            "high": round(max(high_price, price), -2),
+            "psf": round(price / (area * 10.7639)),
+        }
+    )
 
 
 @app.errorhandler(400)

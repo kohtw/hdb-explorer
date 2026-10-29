@@ -23,6 +23,7 @@ DATASETS = {
     "schools.csv": "d_688b934f82c1059ed0a6993d2a829089",  # MOE general information of schools
     "polyclinics.geojson": "d_3ca2a28059588f297908b32da4ac3cbe",  # HPB polyclinic locations
     "station_codes.csv": "d_d312a5b127e1ae74299b8ae664cedd4e",  # LTA station codes and lines
+    "hdb_buildings.geojson": "d_16b157c52ed637edd6ba1232e026258d",  # HDB building outlines
 }
 EXTERNAL = {
     "bus_stops.json": "https://data.busrouter.sg/v1/stops.min.json",
@@ -45,23 +46,75 @@ OSM_QUERY = (
     + "".join(f"nwr{tag}(area.sg);" for tag in OSM_KINDS.values())
     + ");out center tags;"
 )
+# Things that may lower a flat's price (rail and expressway noise, cemeteries) or raise it (sea and reservoir views).
+# The coastline sits on the country's edge, so it's fetched by bounding box rather than by area.
+OSM_FEATURES_QUERY = """[out:json][timeout:180];area["ISO3166-1"="SG"][admin_level=2]->.sg;(
+  way["railway"~"^(subway|light_rail|monorail)$"](area.sg);
+  way["highway"="motorway"](area.sg);
+  nwr["landuse"="cemetery"](area.sg);
+  nwr["amenity"~"^(grave_yard|crematorium)$"](area.sg);
+  nwr["water"="reservoir"](area.sg);
+  way["natural"="coastline"](1.15,103.59,1.48,104.1);
+);out tags geom;"""
 
 
-def fetch_osm_places() -> list[dict]:
-    """Supermarkets, malls and food courts in Singapore as {kind, name, brand, lat, lon}."""
-    body = urllib.parse.urlencode({"data": OSM_QUERY}).encode()
+def overpass(query: str) -> list[dict]:
+    body = urllib.parse.urlencode({"data": query}).encode()
     for attempt in range(8):
         url = OVERPASS_URLS[attempt % len(OVERPASS_URLS)]
         try:
             request = urllib.request.Request(url, data=body, headers={"User-Agent": OVERPASS_USER_AGENT})
-            with urllib.request.urlopen(request, timeout=180) as response:
-                elements = json.load(response)["elements"]
-            break
+            with urllib.request.urlopen(request, timeout=240) as response:
+                return json.load(response)["elements"]
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
             print(f"  Overpass {url} failed ({error}); retrying")
             time.sleep(min(60, 5 * 2**attempt))
-    else:
-        raise RuntimeError("All Overpass servers failed")
+    raise RuntimeError("All Overpass servers failed")
+
+
+def osm_layer(tags: dict) -> int:
+    try:
+        return int(tags.get("layer", 0))
+    except ValueError:
+        return 0
+
+
+def feature_kind(tags: dict) -> str | None:
+    if tags.get("railway"):
+        # Tunnelled or underground track is silent; everything else (elevated or at grade) is heard.
+        underground = tags.get("tunnel") in ("yes", "building_passage") or osm_layer(tags) < 0
+        return None if underground else "rail_above"
+    if tags.get("highway") == "motorway":
+        return "expressway"
+    if tags.get("landuse") == "cemetery" or tags.get("amenity") in ("grave_yard", "crematorium"):
+        return "cemetery"
+    if tags.get("water") == "reservoir" or tags.get("natural") == "coastline":
+        return "water"
+    return None
+
+
+def element_lines(e: dict) -> list[list[list[float]]]:
+    """An element's outline(s) as lists of [lat, lon]; a node is a one-point line."""
+    if "lat" in e:
+        return [[[e["lat"], e["lon"]]]]
+    if "geometry" in e:
+        return [[[p["lat"], p["lon"]] for p in e["geometry"]]]
+    return [[[p["lat"], p["lon"]] for p in m["geometry"]] for m in e.get("members", []) if m.get("geometry")]
+
+
+def fetch_osm_features() -> dict[str, list[list[list[float]]]]:
+    """Lines and outlines by kind (rail_above, expressway, cemetery, water), coordinates rounded to ~1 m."""
+    features = {"rail_above": [], "expressway": [], "cemetery": [], "water": []}
+    for e in overpass(OSM_FEATURES_QUERY):
+        kind = feature_kind(e.get("tags", {}))
+        if kind:
+            features[kind] += [[[round(lat, 5), round(lon, 5)] for lat, lon in line] for line in element_lines(e)]
+    return features
+
+
+def fetch_osm_places() -> list[dict]:
+    """Supermarkets, malls and food courts in Singapore as {kind, name, brand, lat, lon}."""
+    elements = overpass(OSM_QUERY)
 
     places = []
     for e in elements:
@@ -105,18 +158,27 @@ def main() -> None:
         body = fetch(url)
         (OUTPUT_DIR / filename).write_bytes(body)
         print(f"Saved {filename} ({len(body):,} bytes)")
-    # A snapshot is committed to git, so a busy Overpass server doesn't fail the build.
+    # Snapshots are committed to git, so a busy Overpass server doesn't fail the build.
     osm_file = OUTPUT_DIR / "osm_places.json"
     try:
         places = fetch_osm_places()
+        osm_file.write_text(json.dumps(places, indent=0), encoding="utf-8")
+        counts = {k: sum(p["kind"] == k for p in places) for k in OSM_KINDS}
+        print(f"Saved osm_places.json ({', '.join(f'{n} {k}' for k, n in counts.items())})")
     except RuntimeError:
         if not osm_file.exists():
             raise
         print("Overpass unavailable; keeping the existing osm_places.json")
-        return
-    osm_file.write_text(json.dumps(places, indent=0), encoding="utf-8")
-    counts = {k: sum(p["kind"] == k for p in places) for k in OSM_KINDS}
-    print(f"Saved osm_places.json ({', '.join(f'{n} {k}' for k, n in counts.items())})")
+
+    features_file = OUTPUT_DIR / "osm_features.json"
+    try:
+        features = fetch_osm_features()
+        features_file.write_text(json.dumps(features, separators=(",", ":")), encoding="utf-8")
+        print(f"Saved osm_features.json ({', '.join(f'{len(v)} {k} lines' for k, v in features.items())})")
+    except RuntimeError:
+        if not features_file.exists():
+            raise
+        print("Overpass unavailable; keeping the existing osm_features.json")
 
 
 if __name__ == "__main__":
